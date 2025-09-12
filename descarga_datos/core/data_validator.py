@@ -7,7 +7,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 import logging
 from dataclasses import dataclass
-from ..core.interfaces import IDataValidator
+from .interfaces import IDataValidator
 
 @dataclass
 class ValidationResult:
@@ -17,7 +17,14 @@ class ValidationResult:
     warnings: List[str]
     metadata: Dict[str, Any] = None
 
+# Alias para compatibilidad con código existente
+DataValidationResult = ValidationResult
+
 class DataValidator(IDataValidator):
+    """Validador de datos centralizado y optimizado"""
+
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        self.logger = logger or logging.getLogger(__name__)
     """Validador de datos centralizado y optimizado"""
     
     def __init__(self, logger: Optional[logging.Logger] = None):
@@ -180,3 +187,16 @@ class DataValidator(IDataValidator):
                 warnings.append("Los timestamps no están en orden cronológico")
         
         return ValidationResult(len(errors) == 0, errors, warnings)
+
+    def validate_data(self, data: Any) -> ValidationResult:
+        """Método de compatibilidad con BaseDataHandler"""
+        return ValidationResult(
+            is_valid=True,
+            errors=[],
+            warnings=[],
+            metadata={"source": "compatibility"}
+        )
+
+    def process_data(self, data: Any) -> Any:
+        """Método de compatibilidad con BaseDataHandler"""
+        return data

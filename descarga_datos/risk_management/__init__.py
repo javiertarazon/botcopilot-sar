@@ -6,16 +6,14 @@ from .risk_management import (
     AdvancedRiskManager,
     RiskConfig,
     Position,
-    CompensationPosition,
     AlertType,
-    RiskMetrics
+    get_risk_manager
 )
 
 __all__ = [
     'AdvancedRiskManager',
     'RiskConfig',
     'Position',
-    'CompensationPosition',
     'AlertType',
-    'RiskMetrics'
+    'get_risk_manager'
 ]

@@ -5,6 +5,7 @@ Versión corregida para ser fiel al Pine Script original.
 import numpy as np
 import pandas as pd
 import talib
+from typing import Dict
 
 class UTBotPSAROptimizedStrategy:
     """
@@ -316,10 +317,19 @@ class UTBotPSAROptimizedStrategy:
                 'losing_trades': losing_trades,
                 'win_rate': win_rate,
                 'total_pnl': total_pnl,
+                'total_return': (total_pnl / 10000.0) * 100,  # Agregar total_return
                 'max_drawdown': max_drawdown,
+                'max_drawdown_percent': (max_drawdown / 10000.0) * 100,  # Agregar max_drawdown_percent
                 'sharpe_ratio': 0.0,  # Placeholder
                 'symbol': symbol,
-                'trades': trades
+                'trades': trades,
+                'compensated_trades': 0,
+                'compensation_success_rate': 0.0,
+                'total_compensation_pnl': 0.0,
+                'avg_compensation_pnl': 0.0,
+                'compensation_ratio': 0.0,
+                'net_compensation_impact': 0.0,
+                'adjusted_total_pnl': total_pnl
             }
 
         except Exception as e:
@@ -330,8 +340,21 @@ class UTBotPSAROptimizedStrategy:
                 'losing_trades': 0,
                 'win_rate': 0.0,
                 'total_pnl': 0.0,
+                'total_return': 0.0,  # Agregar total_return en caso de error
                 'max_drawdown': 0.0,
+                'max_drawdown_percent': 0.0,  # Agregar max_drawdown_percent en caso de error
                 'sharpe_ratio': 0.0,
                 'symbol': symbol,
-                'trades': []
+                'trades': [],
+                'compensated_trades': 0,
+                'compensation_success_rate': 0.0,
+                'total_compensation_pnl': 0.0,
+                'avg_compensation_pnl': 0.0,
+                'compensation_ratio': 0.0,
+                'net_compensation_impact': 0.0,
+                'adjusted_total_pnl': 0.0
             }
+
+    def run_backtest(self, df: pd.DataFrame, symbol: str) -> dict:
+        """Alias para run() para compatibilidad"""
+        return self.run(df, symbol)

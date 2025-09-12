@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, asdict
 import threading
-from ..core.interfaces import ICacheManager
+from .interfaces import ICacheManager
 
 @dataclass
 class CacheEntry:

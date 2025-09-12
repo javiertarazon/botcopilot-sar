@@ -1,0 +1,72 @@
+{
+  "comparison_summary": {
+    "best_params": {
+      "sensitivity": 1.0,
+      "risk_percent": 2.5,
+      "tp_atr_multiplier": 2.5,
+      "sl_atr_multiplier": 1.0
+    },
+    "timeframes_tested": [
+      "5m",
+      "15m",
+      "1h",
+      "4h"
+    ],
+    "best_timeframe": "5m",
+    "timestamp": "2025-09-11T19:19:20.327689"
+  },
+  "results": [
+    {
+      "timeframe": "5m",
+      "market_return": 197.21752368064952,
+      "strategy_return": 47.21172108118101,
+      "vs_market": -150.0058025994685,
+      "sharpe_ratio": -7.800782853468347,
+      "max_drawdown": 3.8319836410313473,
+      "win_rate": 0.3721153846153846,
+      "total_trades": 2080,
+      "total_pnl": 4721.172108118101,
+      "execution_time": 10.022126,
+      "data_points": 53445
+    },
+    {
+      "timeframe": "15m",
+      "market_return": 194.04741744284505,
+      "strategy_return": 23.708655032282227,
+      "vs_market": -170.33876241056282,
+      "sharpe_ratio": -8.767095800169296,
+      "max_drawdown": 7.438907987252096,
+      "win_rate": 0.3564516129032258,
+      "total_trades": 1240,
+      "total_pnl": 2370.8655032282227,
+      "execution_time": 3.801848,
+      "data_points": 17816
+    },
+    {
+      "timeframe": "1h",
+      "market_return": 193.0795847750865,
+      "strategy_return": 19.915171408670307,
+      "vs_market": -173.16441336641617,
+      "sharpe_ratio": -10.62397231254893,
+      "max_drawdown": 3.895131681279181,
+      "win_rate": 0.4021164021164021,
+      "total_trades": 378,
+      "total_pnl": 1991.5171408670308,
+      "execution_time": 0.963257,
+      "data_points": 4766
+    },
+    {
+      "timeframe": "4h",
+      "market_return": 193.0795847750865,
+      "strategy_return": 3.4382314994599157,
+      "vs_market": -189.64135327562659,
+      "sharpe_ratio": -10.724932484714506,
+      "max_drawdown": 2.3162075225498486,
+      "win_rate": 0.34591194968553457,
+      "total_trades": 159,
+      "total_pnl": 343.8231499459916,
+      "execution_time": 0.437156,
+      "data_points": 1389
+    }
+  ]
+}

@@ -170,3 +170,7 @@ class MT5Downloader:
         except Exception as e:
             self.logger.error(f"Error obteniendo símbolos: {e}")
             return []
+
+    def close(self):
+        """Alias para shutdown() para compatibilidad"""
+        self.shutdown()

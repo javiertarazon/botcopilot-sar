@@ -7,7 +7,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timezone
 import logging
-from ..core.interfaces import IDataAdapter, IOHLCVData
+from .interfaces import IDataAdapter, IOHLCVData
 
 class OHLCVData(IOHLCVData):
     """Implementación concreta de datos OHLCV"""

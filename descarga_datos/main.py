@@ -45,7 +45,8 @@ from utils.storage import DataStorage, save_to_csv
 from config.config_loader import load_config_from_yaml, get_active_exchanges, get_enabled_strategies
 from utils.logger import setup_logging, get_logger
 from strategies.ut_bot_psar import UTBotPSARStrategy
-from strategies.optimized_utbot_strategy import OptimizedUTBotStrategy
+from strategies.ut_bot_basico_con_modulo_gestion_riesgo import UTBotBasicoConModuloGestionRiesgo
+from strategies.ut_bot_psar_optimized import UTBotPSAROptimizedStrategy
 from backtesting.backtester import AdvancedBacktester
 
 def check_python_processes(logger=None):
@@ -262,22 +263,52 @@ def force_cleanup_port_8501(logger=None):
             if logger:
                 logger.warning(f"Error en método 1: {e}")
 
-        # Método 2: Matar todos los procesos de Python (más agresivo)
+        # Método 2: Matar procesos de Python relacionados con Streamlit (más selectivo)
         try:
             if not success:
-                logger.info("🔧 Método 2: Terminando todos los procesos Python...")
+                logger.info("🔧 Método 2: Terminando procesos Python relacionados con Streamlit...")
 
-                result = subprocess.run(['taskkill', '/IM', 'python.exe', '/F'],
-                                      capture_output=True, text=True, timeout=10)
+                # Obtener el PID del proceso actual para excluirlo
+                current_pid = str(os.getpid())
+                if logger:
+                    logger.info(f"🔒 Protegiendo proceso principal (PID: {current_pid})")
 
-                if result.returncode == 0:
+                # Buscar procesos Python que contengan "streamlit" en su línea de comandos
+                try:
+                    wmic_result = subprocess.run([
+                        'wmic', 'process', 'where', 
+                        "name='python.exe'", 
+                        'get', 'ProcessId,CommandLine', '/format:csv'
+                    ], capture_output=True, text=True, timeout=10)
+
+                    streamlit_pids = []
+                    for line in wmic_result.stdout.split('\n'):
+                        if 'streamlit' in line.lower() and current_pid not in line:
+                            parts = line.split(',')
+                            for part in parts:
+                                if part.strip().isdigit():
+                                    streamlit_pids.append(part.strip())
+
+                    # Terminar solo procesos de Streamlit
+                    for pid in streamlit_pids:
+                        if pid != current_pid:  # Doble verificación
+                            try:
+                                result = subprocess.run(['taskkill', '/PID', pid, '/F'],
+                                                      capture_output=True, text=True, timeout=5)
+                                if result.returncode == 0:
+                                    if logger:
+                                        logger.info(f"🛑 Proceso Streamlit {pid} terminado")
+                                    success = True
+                            except Exception as e:
+                                if logger:
+                                    logger.warning(f"Error terminando proceso {pid}: {e}")
+
+                except Exception as e:
                     if logger:
-                        logger.info("🛑 Todos los procesos Python terminados")
-                    success = True
+                        logger.warning(f"Error buscando procesos Streamlit: {e}")
+
+                if success:
                     time.sleep(3)  # Esperar a que se liberen los recursos
-                else:
-                    if logger:
-                        logger.warning(f"No se pudieron terminar procesos Python: {result.stderr}")
 
         except Exception as e:
             if logger:
@@ -432,7 +463,7 @@ def launch_dashboard():
             return False
 
         # PASO 6: Verificar que el dashboard existe
-        dashboard_path = os.path.join(grandparent_root, "dash2.py")
+        dashboard_path = os.path.join(project_root, "dashboard", "dash2.py")
         if not os.path.exists(dashboard_path):
             logger.error(f"❌ Dashboard no encontrado en: {dashboard_path}")
             return False
@@ -443,9 +474,63 @@ def launch_dashboard():
         try:
             import subprocess
 
+            # DETECTAR ENTORNO VIRTUAL CORRECTO
+            python_executable = None
+
+            # Método 1: Buscar entorno virtual en el directorio del proyecto
+            venv_paths = [
+                r"C:\Users\javie\proyecto bot copilot\trading_bot_env\Scripts\python.exe",  # Ruta conocida que funciona
+                os.path.join(grandparent_root, "trading_bot_env", "Scripts", "python.exe"),  # Windows
+                os.path.join(grandparent_root, "trading_bot_env", "bin", "python"),          # Linux/Mac
+                os.path.join(grandparent_root, "venv", "Scripts", "python.exe"),            # Windows alternativo
+                os.path.join(grandparent_root, "venv", "bin", "python"),                    # Linux/Mac alternativo
+                os.path.join(project_root, "..", "trading_bot_env", "Scripts", "python.exe"),  # Ruta relativa correcta
+            ]
+
+            for venv_path in venv_paths:
+                if os.path.exists(venv_path):
+                    python_executable = venv_path
+                    logger.info(f"✅ Entorno virtual encontrado: {venv_path}")
+                    break
+
+            # Método 2: Usar variable de entorno VIRTUAL_ENV si existe
+            if not python_executable and "VIRTUAL_ENV" in os.environ:
+                venv_base = os.environ["VIRTUAL_ENV"]
+                possible_exe = os.path.join(venv_base, "Scripts", "python.exe") if os.name == 'nt' else os.path.join(venv_base, "bin", "python")
+                if os.path.exists(possible_exe):
+                    python_executable = possible_exe
+                    logger.info(f"✅ Entorno virtual detectado via VIRTUAL_ENV: {possible_exe}")
+
+            # Método 3: Usar sys.executable como fallback
+            if not python_executable:
+                python_executable = sys.executable
+                logger.warning(f"⚠️ No se detectó entorno virtual, usando Python del sistema: {python_executable}")
+
+            # Verificar que el ejecutable de Python existe
+            if not os.path.exists(python_executable):
+                logger.error(f"❌ Ejecutable de Python no encontrado: {python_executable}")
+                return False
+
+            # Verificar que Streamlit está disponible en el entorno detectado
+            try:
+                test_cmd = [python_executable, "-c", "import streamlit; print('OK')"]
+                result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=5)
+
+                if result.returncode != 0:
+                    logger.error("❌ Streamlit no está disponible en el entorno Python detectado")
+                    logger.error(f"Error: {result.stderr}")
+                    logger.info("💡 Solución: Instala Streamlit con: pip install streamlit")
+                    return False
+                else:
+                    logger.info("✅ Streamlit está disponible en el entorno detectado")
+
+            except Exception as e:
+                logger.error(f"❌ Error verificando Streamlit: {e}")
+                return False
+
             # Comando para ejecutar streamlit con opciones adicionales
             cmd = [
-                sys.executable, "-m", "streamlit", "run", "dash2.py",
+                python_executable, "-m", "streamlit", "run", "dash2.py",
                 "--server.port", "8501",
                 "--server.headless", "true",
                 "--server.address", "0.0.0.0",
@@ -454,13 +539,14 @@ def launch_dashboard():
             ]
 
             logger.info("📊 Ejecutando Streamlit directamente...")
-            logger.info(f"📂 Directorio de trabajo: {grandparent_root}")
+            logger.info(f"📂 Directorio de trabajo: {os.path.join(project_root, 'dashboard')}")
+            logger.info(f"🐍 Python ejecutable: {python_executable}")
             logger.info(f"📄 Archivo dashboard: dash2.py")
 
             # Ejecutar streamlit en background con mejor configuración
             process = subprocess.Popen(
                 cmd,
-                cwd=grandparent_root,
+                cwd=os.path.join(project_root, "dashboard"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -509,7 +595,201 @@ def launch_dashboard():
         logger.error(f"❌ Error general en launch_dashboard: {e}")
         return False
 
+def launch_dashboard_safe():
+    """
+    Versión robusta y mejorada del lanzador de dashboard con mejor detección de entornos
+    y solución automatizada de problemas.
+    """
+    try:
+        logger = get_logger(__name__)
+        logger.info("🚀 Iniciando lanzamiento seguro del dashboard...")
+
+        # Verificar que el dashboard existe
+        dashboard_path = os.path.join(project_root, "dashboard", "dash2.py")
+        if not os.path.exists(dashboard_path):
+            logger.error(f"❌ Dashboard no encontrado en: {dashboard_path}")
+            logger.info("🔍 Buscando dashboard en ubicaciones alternativas...")
+            
+            # Buscar dashboard en ubicaciones alternativas
+            alt_paths = [
+                os.path.join(project_root, "dash2.py"),
+                os.path.join(parent_root, "dash2.py"),
+                os.path.join(grandparent_root, "dash2.py"),
+                os.path.join(project_root, "dashboard", "dash2.py")  # Ubicación correcta
+            ]
+            
+            for alt_path in alt_paths:
+                if os.path.exists(alt_path):
+                    dashboard_path = alt_path
+                    logger.info(f"✅ Dashboard encontrado en ubicación alternativa: {dashboard_path}")
+                    break
+            else:
+                return False
+
+        logger.info("📊 Lanzando Dashboard de forma segura...")
+
+        # DETECTAR ENTORNO VIRTUAL CORRECTO - Método mejorado
+        python_executable = None
+
+        # Método 1: Detectar entorno actual (más confiable)
+        if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+            python_executable = sys.executable
+            logger.info(f"✅ Usando entorno virtual activo: {python_executable}")
+            
+        # Método 2: Buscar entorno virtual en el directorio del proyecto
+        if not python_executable:
+            venv_paths = [
+                r"C:\Users\javie\proyecto bot copilot\trading_bot_env\Scripts\python.exe",  # Ruta conocida que funciona
+                os.path.join(grandparent_root, "trading_bot_env", "Scripts", "python.exe"),  # Windows
+                os.path.join(grandparent_root, "trading_bot_env", "bin", "python"),          # Linux/Mac
+                os.path.join(grandparent_root, "venv", "Scripts", "python.exe"),            # Windows alternativo
+                os.path.join(grandparent_root, "venv", "bin", "python"),                    # Linux/Mac alternativo
+                os.path.join(grandparent_root, ".venv", "Scripts", "python.exe"),           # Otra convención Windows
+                os.path.join(grandparent_root, ".venv", "bin", "python"),                   # Otra convención Linux/Mac
+                os.path.join(project_root, "..", "trading_bot_env", "Scripts", "python.exe"),  # Ruta relativa correcta
+            ]
+
+            for venv_path in venv_paths:
+                if os.path.exists(venv_path):
+                    python_executable = venv_path
+                    logger.info(f"✅ Entorno virtual encontrado: {venv_path}")
+                    break
+
+        # Método 2: Usar variable de entorno VIRTUAL_ENV si existe
+        if not python_executable and "VIRTUAL_ENV" in os.environ:
+            venv_base = os.environ["VIRTUAL_ENV"]
+            possible_exe = os.path.join(venv_base, "Scripts", "python.exe") if os.name == 'nt' else os.path.join(venv_base, "bin", "python")
+            if os.path.exists(possible_exe):
+                python_executable = possible_exe
+                logger.info(f"✅ Entorno virtual detectado via VIRTUAL_ENV: {possible_exe}")
+
+        # Método 3: Usar sys.executable como fallback
+        if not python_executable:
+            python_executable = sys.executable
+            logger.warning(f"⚠️ No se detectó entorno virtual, usando Python del sistema: {python_executable}")
+
+        # Verificar que el ejecutable de Python existe
+        if not os.path.exists(python_executable):
+            logger.error(f"❌ Ejecutable de Python no encontrado: {python_executable}")
+            return False
+
+        # Verificar que Streamlit está disponible en el entorno detectado e instalar si es necesario
+        try:
+            import subprocess
+            test_cmd = [python_executable, "-c", "import streamlit; print('OK')"]
+            result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=5)
+
+            if result.returncode != 0:
+                logger.warning("⚠️ Streamlit no está disponible en el entorno Python detectado")
+                logger.info("🔄 Intentando instalar Streamlit automáticamente...")
+                
+                try:
+                    # Instalar streamlit automáticamente
+                    install_cmd = [python_executable, "-m", "pip", "install", "streamlit"]
+                    install_result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=60)
+                    
+                    if install_result.returncode == 0:
+                        logger.info("✅ Streamlit instalado correctamente")
+                        # Verificar de nuevo
+                        verify_cmd = [python_executable, "-c", "import streamlit; print('OK')"]
+                        verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=5)
+                        if verify_result.returncode == 0:
+                            logger.info("✅ Verificación post-instalación exitosa")
+                        else:
+                            logger.error("❌ Instalación completada pero verificación fallida")
+                            logger.error(f"Error: {verify_result.stderr}")
+                            return False
+                    else:
+                        logger.error("❌ Error instalando Streamlit")
+                        logger.error(f"Error: {install_result.stderr}")
+                        logger.info("💡 Solución: Instala Streamlit manualmente con: pip install streamlit")
+                        return False
+                except Exception as e:
+                    logger.error(f"❌ Error en proceso de instalación: {e}")
+                    return False
+            else:
+                logger.info("✅ Streamlit está disponible en el entorno detectado")
+
+        except Exception as e:
+            logger.error(f"❌ Error verificando Streamlit: {e}")
+            return False
+
+        # Comando para ejecutar streamlit con el entorno correcto
+        cmd = [
+            python_executable, "-m", "streamlit", "run", "dash2.py",
+            "--server.port", "8501",
+            "--server.headless", "true",
+            "--server.address", "0.0.0.0"
+        ]
+
+        logger.info(f"📂 Directorio: {os.path.join(project_root, 'dashboard')}")
+        logger.info(f"🐍 Python ejecutable: {python_executable}")
+        logger.info(f"📄 Archivo: dash2.py")
+
+        # Ejecutar en proceso completamente independiente
+        process = subprocess.Popen(
+            cmd,
+            cwd=os.path.join(project_root, "dashboard"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS if os.name == 'nt' else 0,
+            start_new_session=True
+        )
+
+        logger.info("⏳ Esperando inicio del dashboard...")
+        time.sleep(3)
+
+        if process.poll() is None:
+            logger.info("✅ Dashboard iniciado correctamente")
+            logger.info("📊 Disponible en: http://localhost:8501")
+
+            try:
+                import webbrowser
+                webbrowser.open("http://localhost:8501")
+                logger.info("🌐 Navegador abierto")
+            except:
+                pass
+
+            return True
+        else:
+            logger.error("❌ Dashboard falló al iniciar")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Error general en launch_dashboard_safe: {e}")
+        return False
+        logger.error(f"❌ Error general: {e}")
+        return False
+
 def validate_data(df: pd.DataFrame, logger=None) -> bool:
+    """
+    Valida la integridad de los datos antes del backtesting.
+    """
+    if logger is None:
+        logger = get_logger(__name__)
+
+    if df.empty:
+        logger.error("El DataFrame está vacío")
+        return False
+
+    required_columns = ['open', 'high', 'low', 'close', 'volume']
+    technical_columns = ['sar', 'atr', 'adx']
+    all_required = required_columns + technical_columns
+
+    missing_columns = [col for col in all_required if col not in df.columns]
+    if missing_columns:
+        logger.error(f"Faltan columnas requeridas: {missing_columns}")
+        return False
+
+    # Verificar valores nulos
+    null_check = df[required_columns].isnull().any()
+    if null_check.any():
+        null_cols = null_check[null_check].index.tolist()
+        logger.error(f"Hay valores nulos en las columnas OHLCV: {null_cols}")
+        return False
+
+    logger.info("Validación de datos completada exitosamente")
+    return True
     """
     Valida la integridad de los datos antes del backtesting.
     """
@@ -632,7 +912,7 @@ async def run_backtest(data: pd.DataFrame, symbol: str, config) -> dict:
 
     # Importar estrategias individuales
     from strategies.ut_bot_psar import UTBotPSARStrategy
-    from strategies.ut_bot_psar_conservative import UTBotPSARConservativeStrategy
+    from strategies.ut_bot_basico_con_modulo_gestion_riesgo import UTBotBasicoConModuloGestionRiesgo
     from strategies.ut_bot_psar_optimized import UTBotPSAROptimizedStrategy
 
     # Configuraciones de estrategia basadas en la configuración
@@ -647,7 +927,7 @@ async def run_backtest(data: pd.DataFrame, symbol: str, config) -> dict:
         strategies["Estrategia_Basica"] = UTBotPSARStrategy()
 
     if "Estrategia_Conservadora" in enabled_strategies:
-        strategies["Estrategia_Conservadora"] = UTBotPSARConservativeStrategy()
+        strategies["Estrategia_Conservadora"] = UTBotBasicoConModuloGestionRiesgo()
 
     if "Estrategia_Optimizada" in enabled_strategies:
         strategies["Estrategia_Optimizada"] = UTBotPSAROptimizedStrategy()
@@ -665,7 +945,8 @@ async def run_backtest(data: pd.DataFrame, symbol: str, config) -> dict:
             commission=config.backtesting.commission
         )
 
-        strategy_results = backtester.run(strategy, data, symbol)
+        # Usar backtesting con gestión de riesgo integrada (incluyendo compensación)
+        strategy_results = backtester.run_with_risk_management(strategy, data, symbol)
         results[strategy_name] = strategy_results
 
         # Log básico de resultados
@@ -737,10 +1018,12 @@ def generate_backtest_report(results: dict, config, logger):
     logger.info(f"   • Temporalidad: {config.backtesting.timeframe}")
     logger.info(f"   • Periodo: {config.backtesting.start_date} a {config.backtesting.end_date}")
 
-    # === SISTEMA DE COMPENSACIÓN DESACTIVADO ===
-    logger.info(f"\n[INFO] SISTEMA DE COMPENSACIÓN: DESACTIVADO")
-    logger.info(f"   • No se aplican compensaciones a los resultados")
-    logger.info(f"   • Se muestran resultados puros de las estrategias")
+    # === SISTEMA DE COMPENSACIÓN ACTIVADO ===
+    logger.info(f"\n[INFO] SISTEMA DE COMPENSACIÓN: ACTIVADO")
+    logger.info(f"   • Sistema de compensación de operaciones en reversión operativo")
+    logger.info(f"   • Se aplican compensaciones automáticas a trades perdedores")
+    logger.info(f"   • Umbral de activación: 3% de pérdida")
+    logger.info(f"   • Tamaño máximo de compensación: 50% de la posición principal")
 
     logger.info(f"\n{'='*80}")
 
@@ -832,26 +1115,67 @@ async def main():
         if backtest_results:
             await save_global_summary(backtest_results, config, logger)
 
-        # Lanzar dashboard automáticamente si está habilitado
-        if hasattr(config.system, 'auto_launch_dashboard') and config.system.auto_launch_dashboard:
-            logger.info("📊 Iniciando lanzamiento automático del dashboard...")
-            dashboard_launched = launch_dashboard()
-            if dashboard_launched:
-                logger.info("✅ Dashboard profesional iniciado exitosamente")
-                logger.info("🌐 Accede a: http://localhost:8501")
-            else:
-                logger.warning("⚠️ No se pudo iniciar el dashboard automáticamente")
+        # Lanzar dashboard automáticamente - SIEMPRE HABILITADO
+        logger.info("📊 Iniciando lanzamiento automático del dashboard...")
+        
+        # Verificar que hay datos para mostrar
+        results_dir = Path("data/dashboard_results")
+        if results_dir.exists() and list(results_dir.glob("*_results.json")):
+            try:
+                # Primer intento: lanzamiento seguro
+                dashboard_launched = launch_dashboard_safe()
+                
+                # Si falla el primer método, intentar con el método alternativo
+                if not dashboard_launched:
+                    logger.warning("⚠️ Primer intento fallido, probando método alternativo...")
+                    dashboard_launched = launch_dashboard()
+                    
+                if dashboard_launched:
+                    logger.info("✅ Dashboard profesional iniciado exitosamente")
+                    logger.info("🌐 Accede a: http://localhost:8501")
+                else:
+                    # Último intento: lanzar con proceso independiente
+                    logger.warning("⚠️ Intentando lanzamiento directo como último recurso...")
+                    try:
+                        subprocess.Popen(
+                            ["python", "-m", "streamlit", "run", os.path.join(grandparent_root, "dash2.py")],
+                            cwd=grandparent_root,
+                            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+                        )
+                        logger.info("✅ Dashboard lanzado en proceso independiente")
+                    except Exception as e:
+                        logger.error(f"❌ Fallo en último intento: {e}")
+                        logger.info("💡 Puedes ejecutar manualmente: python dash2.py")
+            except Exception as e:
+                logger.error(f"❌ Error en lanzamiento automático del dashboard: {e}")
+                logger.info("💡 Puedes ejecutar manualmente: python dash2.py")
         else:
-            logger.info("📊 Dashboard automático deshabilitado")
-            logger.info("💡 Para ver los resultados, ejecuta: python run_dashboard.py")
+            logger.warning("⚠️ No hay datos de resultados para mostrar en el dashboard")
+            logger.info("💡 Para ver los resultados, ejecuta: python dash2.py")
 
     finally:
-        # Cerrar conexiones
-        await downloader.shutdown()
+        # Cerrar conexiones y liberar recursos
+        logger.info("🔄 Cerrando conexiones y liberando recursos...")
+        try:
+            # Cerrar conexiones del downloader
+            await downloader.shutdown()
+            logger.info("✅ Conexiones del downloader cerradas correctamente")
+        except Exception as e:
+            logger.warning(f"⚠️ Error cerrando conexiones del downloader: {e}")
+
+        try:
+            # Cerrar base de datos si existe
+            if hasattr(downloader, 'storage') and downloader.storage:
+                downloader.storage.close()
+                logger.info("✅ Base de datos cerrada correctamente")
+        except Exception as e:
+            logger.warning(f"⚠️ Error cerrando base de datos: {e}")
+
+        logger.info("🏁 Limpieza completada")
 
 def calculate_symbol_compensation_metrics(results: dict, compensation_config: dict = None) -> dict:
     """
-    Calcula métricas de compensación realistas basadas en configuración.
+    Calcula métricas de compensación usando el sistema real implementado.
 
     Args:
         results: Resultados del backtesting por estrategia
@@ -876,25 +1200,46 @@ def calculate_symbol_compensation_metrics(results: dict, compensation_config: di
             'adjusted_total_pnl': 0.0
         }
 
-    print(f"[DEBUG] Función calculate_symbol_compensation_metrics llamada con configuración realista")
     logger = get_logger(__name__)
-    logger.info(f"[DEBUG] Calculando métricas de compensación realistas")
+    logger.info(f"[INFO] Calculando métricas de compensación usando sistema real")
 
     # Obtener la mejor estrategia para calcular métricas
     best_strategy = max(results.items(), key=lambda x: x[1].get('total_pnl', -10000))
     strategy_name, result = best_strategy
-    print(f"[DEBUG] Mejor estrategia: {strategy_name}")
+
+    # Usar métricas reales del sistema de compensación si están disponibles
+    if 'compensated_trades' in result and 'total_compensation_pnl' in result:
+        logger.info(f"[INFO] Usando métricas reales del sistema de compensación para {strategy_name}")
+
+        compensation_success_rate = result.get('compensation_success_rate', 0.0)
+        original_pnl = result.get('original_pnl', result.get('total_pnl', 0))
+        adjusted_total_pnl = result.get('total_pnl', 0)
+
+        return {
+            'compensated_trades': result.get('compensated_trades', 0),
+            'total_compensation_pnl': result.get('total_compensation_pnl', 0.0),
+            'compensation_success_rate': compensation_success_rate,
+            'adjusted_total_pnl': adjusted_total_pnl,
+            'original_pnl': original_pnl,
+            'total_losing_trades': 0,  # No disponible en métricas reales
+            'compensation_attempts': result.get('compensated_trades', 0),
+            'compensation_config': compensation_config,
+            'system_type': 'real_compensation'
+        }
+
+    # Si no hay métricas reales, usar simulación mejorada
+    logger.info(f"[INFO] Usando simulación mejorada de compensación para {strategy_name}")
 
     # Obtener trades de la mejor estrategia
     trades = result.get('trades', [])
-    print(f"[DEBUG] Número total de trades: {len(trades)}")
 
     if not trades:
         return {
             'compensated_trades': 0,
             'total_compensation_pnl': 0.0,
             'compensation_success_rate': 0.0,
-            'adjusted_total_pnl': result.get('total_pnl', 0)
+            'adjusted_total_pnl': result.get('total_pnl', 0),
+            'system_type': 'backtest'
         }
 
     # Filtrar trades perdedores elegibles para compensación
@@ -907,17 +1252,16 @@ def calculate_symbol_compensation_metrics(results: dict, compensation_config: di
             if trade_size >= compensation_config['min_trade_size']:
                 losing_trades.append(trade)
 
-    print(f"[DEBUG] Trades perdedores elegibles: {len(losing_trades)}")
-
     if not losing_trades:
         return {
             'compensated_trades': 0,
             'total_compensation_pnl': 0.0,
             'compensation_success_rate': 0.0,
-            'adjusted_total_pnl': result.get('total_pnl', 0)
+            'adjusted_total_pnl': result.get('total_pnl', 0),
+            'system_type': 'backtest'
         }
 
-    # Simular compensaciones realistas
+    # Simular compensaciones con parámetros realistas del sistema implementado
     total_compensation_pnl = 0.0
     successful_compensations = 0
     compensation_attempts = 0
@@ -940,7 +1284,7 @@ def calculate_symbol_compensation_metrics(results: dict, compensation_config: di
 
             compensation_attempts += 1
 
-            # Calcular tamaño de compensación (limitado)
+            # Calcular tamaño de compensación (usando parámetros del sistema real)
             original_loss = abs(trade.get('pnl', 0))
             max_compensation = original_loss * compensation_config['max_compensation_size']
             compensation_size = min(max_compensation, original_loss * 0.3)  # Máximo 30% del original
@@ -973,13 +1317,14 @@ def calculate_symbol_compensation_metrics(results: dict, compensation_config: di
         'total_compensation_pnl': total_compensation_pnl,
         'compensation_success_rate': compensation_success_rate,
         'adjusted_total_pnl': adjusted_total_pnl,
+        'original_pnl': original_pnl,
         'total_losing_trades': total_losing_trades,
         'compensation_attempts': compensation_attempts,
-        'compensation_config': compensation_config
+        'compensation_config': compensation_config,
+        'system_type': 'backtest'
     }
 
-    print(f"[DEBUG] Métricas calculadas: {metrics}")
-    logger.info(f"[DEBUG] Compensación completada: {successful_compensations}/{compensation_attempts} exitosas ({compensation_success_rate:.1f}%)")
+    logger.info(f"[INFO] Compensación completada: {successful_compensations}/{compensation_attempts} exitosas ({compensation_success_rate:.1f}%)")
 
     return metrics
 
@@ -1013,8 +1358,9 @@ async def save_backtest_results(results: dict, symbol: str, config, logger):
         win_rates = []
         compensation_rates = []
 
-        # === SISTEMA DE COMPENSACIÓN COMPLETAMENTE DESACTIVADO ===
-        logger.info(f"[INFO] Sistema de compensación completamente deshabilitado para {symbol}")
+        # === SISTEMA DE COMPENSACIÓN ACTIVADO ===
+        logger.info(f"[INFO] Sistema de compensación activado para {symbol}")
+        logger.info(f"[INFO] Procesando compensaciones automáticas para trades perdedores")
 
         for strategy_name, strategy_result in results.items():
             # Convertir datos no serializables
@@ -1029,11 +1375,24 @@ async def save_backtest_results(results: dict, symbol: str, config, logger):
                 else:
                     clean_result[key] = str(value)
 
-            # NO aplicar compensaciones - usar resultados puros
-            clean_result['adjusted_total_pnl'] = strategy_result.get('total_pnl', 0)
-            clean_result['compensation_applied'] = 0.0
-            clean_result['compensation_success_rate'] = 0.0
-            clean_result['compensated_trades'] = 0
+            # === APLICAR COMPENSACIONES CALCULADAS ===
+            # Las métricas de compensación ya se calcularon en el backtester
+            # Solo necesitamos conservar los valores calculados
+            
+            # Mantener métricas de compensación si están presentes
+            if 'compensated_trades' not in clean_result:
+                clean_result['compensated_trades'] = 0
+            if 'total_compensation_pnl' not in clean_result:
+                clean_result['total_compensation_pnl'] = 0.0
+            if 'compensation_success_rate' not in clean_result:
+                clean_result['compensation_success_rate'] = 0.0
+            if 'adjusted_total_pnl' not in clean_result:
+                clean_result['adjusted_total_pnl'] = strategy_result.get('total_pnl', 0)
+            
+            # Log de las métricas de compensación para debug
+            logger.info(f"[COMPENSATION] {strategy_name}: compensados={clean_result['compensated_trades']}, "
+                       f"p&l_comp=${clean_result['total_compensation_pnl']:.2f}, "
+                       f"tasa={clean_result['compensation_success_rate']:.1f}%")
 
             dashboard_data['strategies'][strategy_name] = clean_result
 

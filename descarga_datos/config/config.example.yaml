@@ -1,0 +1,276 @@
+# Trading Bot Copilot - Configuration Examples
+# ============================================
+
+# This file contains example configurations for different use cases
+# Copy the relevant sections to your config.yaml file
+
+# =============================================================================
+# BASIC CONFIGURATION
+# =============================================================================
+
+system:
+  log_level: INFO
+  log_file: logs/trading_bot.log
+  data_cache_dir: data/cache
+  models_dir: models
+  reports_dir: reports
+  max_workers: 4
+  memory_limit_gb: 8.0
+  enable_monitoring: true
+  enable_alerts: true
+
+# =============================================================================
+# EXCHANGE CONFIGURATIONS
+# =============================================================================
+
+exchanges:
+  # Primary exchange - Bybit
+  bybit:
+    name: bybit
+    api_key: "your_bybit_api_key_here"
+    api_secret: "your_bybit_api_secret_here"
+    sandbox: true  # Set to false for live trading
+    rate_limit: 10
+    timeout: 30000
+    retry_count: 3
+    retry_delay: 5
+
+  # Alternative exchange - Binance
+  binance:
+    name: binance
+    api_key: "your_binance_api_key_here"
+    api_secret: "your_binance_api_secret_here"
+    sandbox: true
+    rate_limit: 10
+    timeout: 30000
+    retry_count: 3
+    retry_delay: 5
+
+  # Alternative exchange - Kraken
+  kraken:
+    name: kraken
+    api_key: "your_kraken_api_key_here"
+    api_secret: "your_kraken_api_secret_here"
+    sandbox: true
+    rate_limit: 10
+    timeout: 30000
+    retry_count: 3
+    retry_delay: 5
+
+# =============================================================================
+# MT5 CONFIGURATION
+# =============================================================================
+
+mt5:
+  enabled: true
+  server: "MetaQuotes-Demo"  # Use "MetaQuotes-Demo" for demo account
+  login: 12345678           # Your MT5 account number
+  password: "your_password_here"
+  path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"  # Windows path
+  # path: "/opt/metatrader5/metatrader5"  # Linux path
+  symbols:
+    - "EURUSD"
+    - "GBPUSD"
+    - "USDJPY"
+    - "AUDUSD"
+    - "USDCAD"
+    - "USDCHF"
+    - "NZDUSD"
+    - "GBPJPY"
+    - "EURJPY"
+  timeframes:
+    - "M1"
+    - "M5"
+    - "M15"
+    - "M30"
+    - "H1"
+    - "H4"
+    - "D1"
+    - "W1"
+    - "MN1"
+  max_bars: 10000
+  timeout: 60000
+
+# =============================================================================
+# BACKTESTING CONFIGURATION
+# =============================================================================
+
+backtesting:
+  symbols:
+    - "BTC/USDT"
+    - "ETH/USDT"
+    - "BNB/USDT"
+    - "ADA/USDT"
+    - "SOL/USDT"
+    - "DOT/USDT"
+    - "LINK/USDT"
+    - "UNI/USDT"
+  timeframe: "1h"
+  start_date: "2024-01-01"
+  end_date: "2024-06-01"
+  initial_capital: 10000.0
+  commission: 0.1        # 0.1% commission
+  slippage: 0.05         # 0.05% slippage
+  max_symbols: 0         # 0 = no limit
+
+# =============================================================================
+# STRATEGY CONFIGURATION
+# =============================================================================
+
+strategies:
+  enabled_strategies:
+    - "ut_bot_psar"
+    - "ut_bot_psar_conservative"
+    - "ut_bot_psar_optimized"
+    - "optimized_strategy"
+  min_signal_strength: 0.6
+  max_hold_time_days: 30
+  profit_target_percent: 0.05    # 5% profit target
+  stop_loss_percent: 0.02        # 2% stop loss
+
+# =============================================================================
+# RISK MANAGEMENT CONFIGURATION
+# =============================================================================
+
+risk_management:
+  max_drawdown: 0.15      # 15% maximum drawdown
+  max_correlation: 0.7    # Maximum correlation between positions
+  kelly_fraction: 0.1     # 10% of Kelly criterion
+  max_positions: 10       # Maximum 10 positions
+  position_size_percent: 0.02  # 2% of capital per position
+
+# =============================================================================
+# INDICATORS CONFIGURATION
+# =============================================================================
+
+indicators:
+  volatility:
+    enabled: true
+    period: 14
+    method: "standard_deviation"
+  heiken_ashi:
+    enabled: true
+    trend_period: 3
+    size_comparison_threshold: 1.2
+  atr:
+    enabled: true
+    period: 14
+  adx:
+    enabled: true
+    period: 14
+    threshold: 25
+  ema:
+    enabled: true
+    periods: [10, 20, 50, 200]
+  parabolic_sar:
+    enabled: true
+    acceleration: 0.02
+    maximum: 0.2
+  normalize_output: true
+
+# =============================================================================
+# STORAGE CONFIGURATION
+# =============================================================================
+
+storage:
+  format: "parquet"       # parquet, hdf5, csv, json
+  compression: "snappy"   # snappy, gzip, lz4, zstd
+  chunk_size: 100000      # Rows per chunk
+  max_file_size_mb: 100   # Maximum file size in MB
+  cleanup_old_files: true
+  retention_days: 365     # Keep files for 1 year
+
+# =============================================================================
+# NORMALIZATION CONFIGURATION
+# =============================================================================
+
+normalization:
+  enabled: true
+  method: "minmax"        # minmax, standard, robust
+  feature_range: [0, 1]   # For minmax scaling
+  with_mean: true         # For standard scaling
+  with_std: true          # For standard scaling
+  quantile_range: [25.0, 75.0]  # For robust scaling
+
+# =============================================================================
+# MONITORING CONFIGURATION
+# =============================================================================
+
+monitoring:
+  enabled: true
+  metrics_port: 9090      # Prometheus metrics port
+  health_check_interval: 60  # Health check every 60 seconds
+  alert_thresholds:
+    max_drawdown: 0.10    # Alert if drawdown > 10%
+    max_positions: 8      # Alert if positions > 8
+    min_sharpe_ratio: 0.5 # Alert if Sharpe < 0.5
+
+# =============================================================================
+# NOTIFICATION CONFIGURATION
+# =============================================================================
+
+notifications:
+  email:
+    enabled: false
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    username: "your_email@gmail.com"
+    password: "your_app_password"
+    recipients:
+      - "alerts@yourcompany.com"
+
+  telegram:
+    enabled: false
+    bot_token: "your_telegram_bot_token"
+    chat_id: "your_chat_id"
+
+  slack:
+    enabled: false
+    webhook_url: "your_slack_webhook_url"
+    channel: "#trading-alerts"
+
+  discord:
+    enabled: false
+    webhook_url: "your_discord_webhook_url"
+
+# =============================================================================
+# DEVELOPMENT CONFIGURATION
+# =============================================================================
+
+development:
+  debug_mode: false
+  enable_profiler: false
+  log_sql_queries: false
+  mock_exchanges: false
+  use_cached_data: true
+  skip_risk_checks: false
+
+# =============================================================================
+# PERFORMANCE CONFIGURATION
+# =============================================================================
+
+performance:
+  enable_multiprocessing: true
+  max_cpu_cores: 0         # 0 = use all available cores
+  memory_cache_size_gb: 4
+  disk_cache_size_gb: 10
+  prefetch_data: true
+  optimize_calculations: true
+
+# =============================================================================
+# BACKUP CONFIGURATION
+# =============================================================================
+
+backup:
+  enabled: true
+  backup_dir: "backups"
+  schedule: "daily"        # daily, weekly, monthly
+  retention_count: 30      # Keep last 30 backups
+  compress_backups: true
+  encrypt_backups: false
+  remote_backup:
+    enabled: false
+    provider: "aws_s3"     # aws_s3, gcp_storage, azure_blob
+    bucket: "your_backup_bucket"
+    region: "us-east-1"</content>
+<parameter name="filePath">c:\Users\javie\proyecto bot copilot\bot trader copilot version 1.0\descarga_datos\config\config.example.yaml

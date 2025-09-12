@@ -67,7 +67,7 @@ class MT5Config:
 
 @dataclass
 class Config:
-    active_exchange: str = "bybit"
+    active_exchange: str = "binance"
     exchanges: Dict[str, Dict[str, str]] = None
     default_symbols: List[str] = None
     data_types: List[str] = None

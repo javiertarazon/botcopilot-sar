@@ -10,7 +10,7 @@ system:
   auto_launch_dashboard: true  # Lanzar dashboard automáticamente después del backtesting
 
 # Exchange activo por defecto
-active_exchange: "bybit"
+active_exchange: "binance"
 
 # Configuración de Exchanges (CCXT)
 exchanges:
@@ -28,44 +28,56 @@ exchanges:
     sandbox: false
     timeout: 30000
 
+  kraken:
+    enabled: true
+    api_key: ""
+    api_secret: ""
+    sandbox: false
+    timeout: 30000
+
 # Configuración MT5
 mt5:
   enabled: true
-  terminal_path: ""
-  server: ""
-  login: 0
-  password: ""
+  terminal_path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  server: "MetaQuotes-Demo"
+  login: 12345678
+  password: "tu_password_aqui"
   timeout: 60000
 
 # Configuración de Backtesting
 backtesting:
   # Símbolos a procesar
   symbols:
-    # Criptomonedas (CCXT)
-    - "YFI/USDT"
+    # Criptomonedas (CCXT - Bybit)
     - "BTC/USDT"
     - "ETH/USDT"
+    - "XRP/USDT"
+    - "LTC/USDT" 
     - "SOL/USDT"
+    - "DOGE/USDT"
     - "ADA/USDT"
-    - "COMP/USDT"
-    - "LINK/USDT"
     - "DOT/USDT"
     # Acciones (MT5)
     - "AAPL.US"
     - "TSLA.US"
-    - "NVDA.US"
-    - "MSFT.US"
     - "GOOGL.US"
+    - "AMZN.US"
+    - "MSFT.US"
+    - "META.US"
+    - "NFLX.US"
+    - "NVDA.US"
 
   # Configuración temporal
-  timeframe: "1h"
+  timeframe: "5m"
   start_date: "2023-01-01"
   end_date: "2025-06-01"
 
   # Configuración financiera
   initial_capital: 10000
-  commission: 0.1
-  slippage: 0.05
+  commission: 0.1  # Comisión en porcentaje por operación
+  slippage: 0.05   # Deslizamiento realista en porcentaje
+  use_realistic_slippage: true  # Usar deslizamiento realista basado en volatilidad
+  use_realistic_fees: true      # Usar comisiones reales del mercado
 
   # Estrategias activas - Usando estrategias individuales
   strategies:
@@ -118,12 +130,15 @@ risk:
 
 # Configuración de Datos
 data:
-  use_mt5_for_stocks: false  # Desactivado hasta que MT5 esté configurado
-  use_ccxt_for_crypto: true
-  max_retries: 3
+  use_mt5_for_stocks: true  # Habilitado para usar MT5 en acciones
+  use_ccxt_for_crypto: true # Usar CCXT para criptomonedas
+  enforce_real_data: true   # Asegurarse de usar solo datos reales históricos
+  max_retries: 5            # Aumentado para mejor recuperación ante fallos
   retry_delay: 5
   limit_per_request: 1000
   validate_data: true
+  data_quality_checks: true # Verificación de calidad de datos
+  remove_anomalies: true    # Eliminar datos anómalos
 
 # Configuración de Reportes
 reports:

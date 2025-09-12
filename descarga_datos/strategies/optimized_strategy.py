@@ -8,7 +8,17 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from ..core.base_strategy import BaseStrategy, Signal, Position, SignalType
+# Importar dependencias del core
+try:
+    from ..core.base_strategy import BaseStrategy, Signal, Position, SignalType
+except ImportError:
+    # Si hay problemas con importaciones relativas, intentar importaciones absolutas
+    import sys
+    import os
+    # Agregar el directorio padre al path
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, parent_dir)
+    from core.base_strategy import BaseStrategy, Signal, Position, SignalType
 
 @dataclass
 class OptimizedStrategyConfig:
@@ -45,7 +55,7 @@ class UTBotPSAROptimized(BaseStrategy):
     """
     
     def __init__(self, config: OptimizedStrategyConfig = None):
-        super().__init__()
+        super().__init__("UT Bot Optimized Strategy", config)
         self.config = config or OptimizedStrategyConfig()
         
         # Configuraciones específicas por símbolo (basadas en optimización)

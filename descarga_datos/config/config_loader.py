@@ -35,6 +35,9 @@ class BacktestingConfig:
     initial_capital: float = 10000.0
     commission: float = 0.1
     slippage: float = 0.05
+    # Nuevos flags para simulación realista
+    use_realistic_slippage: bool = False
+    use_realistic_fees: bool = False
     strategies: Dict[str, bool] = field(default_factory=dict)
 
 @dataclass
@@ -64,10 +67,14 @@ class RiskConfig:
 class DataConfig:
     use_mt5_for_stocks: bool = False
     use_ccxt_for_crypto: bool = True
+    # Nuevos controles de calidad y realismo de datos
+    enforce_real_data: bool = False
     max_retries: int = 3
     retry_delay: int = 5
     limit_per_request: int = 1000
     validate_data: bool = True
+    data_quality_checks: bool = False
+    remove_anomalies: bool = False
 
 @dataclass
 class ReportsConfig:
@@ -88,7 +95,7 @@ class SystemConfig:
 @dataclass
 class Config:
     system: SystemConfig = field(default_factory=SystemConfig)
-    active_exchange: str = "bybit"  # Exchange activo por defecto
+    active_exchange: str = "binance"  # Exchange activo por defecto
     exchanges: Dict[str, ExchangeConfig] = field(default_factory=dict)
     mt5: MT5Config = field(default_factory=MT5Config)
     backtesting: BacktestingConfig = field(default_factory=BacktestingConfig)
@@ -228,6 +235,8 @@ def save_config_to_yaml(config: Config, config_path: Optional[str] = None) -> No
             'initial_capital': config.backtesting.initial_capital,
             'commission': config.backtesting.commission,
             'slippage': config.backtesting.slippage,
+            'use_realistic_slippage': config.backtesting.use_realistic_slippage,
+            'use_realistic_fees': config.backtesting.use_realistic_fees,
             'strategies': config.backtesting.strategies
         },
         'indicators': {
@@ -251,10 +260,13 @@ def save_config_to_yaml(config: Config, config_path: Optional[str] = None) -> No
         'data': {
             'use_mt5_for_stocks': config.data.use_mt5_for_stocks,
             'use_ccxt_for_crypto': config.data.use_ccxt_for_crypto,
+            'enforce_real_data': config.data.enforce_real_data,
             'max_retries': config.data.max_retries,
             'retry_delay': config.data.retry_delay,
             'limit_per_request': config.data.limit_per_request,
-            'validate_data': config.data.validate_data
+            'validate_data': config.data.validate_data,
+            'data_quality_checks': config.data.data_quality_checks,
+            'remove_anomalies': config.data.remove_anomalies
         },
         'reports': {
             'save_individual_results': config.reports.save_individual_results,
@@ -312,6 +324,12 @@ def print_config_summary(config: Config) -> None:
     print(f"  • Take Profit: {config.risk.tp_atr_multiplier}x ATR")
     print(f"  • Stop Loss: {config.risk.sl_atr_multiplier}x ATR")
     print("=" * 50)
+
+def load_config():
+    """
+    Función wrapper para cargar configuración
+    """
+    return load_config_from_yaml()
 
 if __name__ == "__main__":
     # Cargar y mostrar configuración

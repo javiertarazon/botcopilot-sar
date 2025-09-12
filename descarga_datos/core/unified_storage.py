@@ -11,9 +11,9 @@ import logging
 from datetime import datetime, timedelta
 import json
 
-from ..core.interfaces import IDataStorage, IOHLCVData
-from ..core.config_manager import StorageConfig
-from ..core.data_validator import DataValidator, ValidationResult
+from .interfaces import IDataStorage, IOHLCVData
+from .config_manager import StorageConfig
+from .data_validator import DataValidator, ValidationResult
 
 class UnifiedDataStorage(IDataStorage):
     """Storage unificado que maneja SQLite y CSV de forma optimizada"""
@@ -22,14 +22,17 @@ class UnifiedDataStorage(IDataStorage):
         self.config = storage_config
         self.logger = logger or logging.getLogger(__name__)
         self.validator = DataValidator(self.logger)
-        
-        # Configurar rutas
-        self.sqlite_path = Path(storage_config.sqlite_path)
-        self.csv_path = Path(storage_config.csv_path)
-        
-        # Crear directorios si no existen
-        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        self.csv_path.mkdir(parents=True, exist_ok=True)
+
+        # Configurar rutas con valores por defecto si no existen
+        sqlite_path = getattr(storage_config, 'sqlite_path', 'data/market_data.db') if storage_config else 'data/market_data.db'
+        csv_path = getattr(storage_config, 'csv_path', 'data/csv') if storage_config else 'data/csv'
+        enable_sqlite = getattr(storage_config, 'enable_sqlite', True) if storage_config else True
+        enable_csv = getattr(storage_config, 'enable_csv', True) if storage_config else True
+
+        self.sqlite_path = Path(sqlite_path)
+        self.csv_path = Path(csv_path)
+        self.enable_sqlite = enable_sqlite
+        self.enable_csv = enable_csv
         
         # Conexión SQLite
         self._connection: Optional[sqlite3.Connection] = None
@@ -565,3 +568,32 @@ class UnifiedDataStorage(IDataStorage):
             stats['csv_size_mb'] = csv_size / (1024 * 1024)
         
         return stats
+
+    # === IMPLEMENTACIÓN DE INTERFAZ IDataStorage ===
+
+    def save_data(self, symbol: str, data: Union[pd.DataFrame, IOHLCVData], timeframe: str) -> bool:
+        """Implementación de IDataStorage.save_data"""
+        # Si es un DataFrame, lo convertimos a un objeto compatible con IOHLCVData
+        if isinstance(data, pd.DataFrame):
+            # Crear un wrapper simple para el DataFrame
+            class DataFrameWrapper:
+                def __init__(self, df: pd.DataFrame):
+                    self._df = df
+                def get_dataframe(self) -> pd.DataFrame:
+                    return self._df
+                def get_timeframe(self) -> str:
+                    return timeframe
+            
+            data = DataFrameWrapper(data)
+        
+        return self.save_ohlcv_data(symbol, timeframe, data)
+
+    def load_data(self, symbol: str, timeframe: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """Implementación de IDataStorage.load_data"""
+        return self.load_ohlcv_data(symbol, timeframe, start_date, end_date)
+
+    def save_to_sqlite(self, symbol: str, timeframe: str, df: pd.DataFrame) -> bool:
+        """Alias para guardar directamente en SQLite"""
+        from .interfaces import OHLCVData
+        data = OHLCVData(df, timeframe)
+        return self.save_ohlcv_data(symbol, timeframe, data)

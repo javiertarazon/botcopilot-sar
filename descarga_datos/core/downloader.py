@@ -18,8 +18,8 @@ from pathlib import Path
 import os
 
 from .mt5_downloader import MT5Downloader
-from utils.storage import DataStorage, save_to_csv
-from utils.normalization import DataNormalizer
+from .unified_storage import UnifiedDataStorage
+# from utils.normalization import DataNormalizer  # Comentado - módulo no existe
 
 class AdvancedDataDownloader:
     """
@@ -33,10 +33,15 @@ class AdvancedDataDownloader:
         self.logger = logging.getLogger(__name__)
 
         # Componentes
+        from .interfaces import create_storage_config
+        storage_config = create_storage_config()  # Siempre usar la función que incluye enable_sqlite
+        self.storage = UnifiedDataStorage(storage_config)
+        # self.normalizer = DataNormalizer()  # Comentado - módulo no existe
+
+        # Inicializar atributos que se usan en initialize()
         self.ccxt_exchanges = {}
-        self.mt5_downloader = MT5Downloader(config.mt5) if hasattr(config, 'mt5') else None
-        self.storage = DataStorage(f"{config.storage.path}/data.db")
-        self.normalizer = DataNormalizer()
+        self.exchanges = self.ccxt_exchanges  # Alias para compatibilidad
+        self.mt5_downloader = MT5Downloader(config.mt5) if hasattr(config, 'mt5') and config.mt5 else None
 
         # Configuración
         self.max_retries = getattr(config, 'max_retries', 3)
@@ -91,6 +96,18 @@ class AdvancedDataDownloader:
                 })
                 success_count += 1
                 self.logger.info("Binance configurado")
+
+            # Configurar Kraken
+            if 'kraken' in self.config.exchanges and self.config.exchanges['kraken'].enabled:
+                exchange_config = self.config.exchanges['kraken']
+                self.ccxt_exchanges['kraken'] = ccxt_async.kraken({
+                    'apiKey': exchange_config.api_key or '',
+                    'secret': exchange_config.api_secret or '',
+                    'sandbox': exchange_config.sandbox,
+                    'timeout': exchange_config.timeout,
+                })
+                success_count += 1
+                self.logger.info("Kraken configurado")
 
             return success_count > 0
 
@@ -170,9 +187,15 @@ class AdvancedDataDownloader:
         if not self.ccxt_exchanges:
             raise Exception("No hay exchanges CCXT configurados")
 
-        # Usar el primer exchange disponible
-        exchange_name = list(self.ccxt_exchanges.keys())[0]
-        exchange = self.ccxt_exchanges[exchange_name]
+        # Usar el exchange activo configurado
+        active_exchange = getattr(self.config, 'active_exchange', 'binance')
+        if active_exchange in self.ccxt_exchanges:
+            exchange_name = active_exchange
+            exchange = self.ccxt_exchanges[exchange_name]
+        else:
+            # Fallback al primer exchange disponible
+            exchange_name = list(self.ccxt_exchanges.keys())[0]
+            exchange = self.ccxt_exchanges[exchange_name]
 
         try:
             # Convertir fechas
@@ -206,56 +229,45 @@ class AdvancedDataDownloader:
 
         return self.mt5_downloader.download_symbol_data(symbol, timeframe, start_date, end_date)
 
-    async def process_and_save_data(self, symbol_data: Dict[str, pd.DataFrame],
+    async def process_and_save_data(self, symbol_data: Dict[str, pd.DataFrame], 
                                   timeframe: str, save_csv: bool = True) -> Dict[str, pd.DataFrame]:
         """
-        Procesa, normaliza y guarda los datos descargados
-
+        Procesa y guarda los datos descargados
+        
         Args:
             symbol_data: Diccionario símbolo -> DataFrame
             timeframe: Timeframe de los datos
-            save_csv: Si guardar también en CSV
-
+            save_csv: Si guardar en CSV además de SQLite
+            
         Returns:
-            Diccionario con los datos procesados (símbolo -> DataFrame normalizado)
+            Diccionario con datos procesados
         """
         processed_data = {}
         
-        try:
-            for symbol, df in symbol_data.items():
-                if df is None or df.empty:
-                    continue
-
-                # Calcular indicadores técnicos
-                df_with_indicators = self._calculate_technical_indicators(df)
-
-                # Normalizar y escalar
-                df_normalized = self._normalize_and_scale(df_with_indicators)
-
-                # Guardar en SQLite (para uso del sistema)
-                table_name = f"{symbol.replace('/', '_').replace('.', '_')}_{timeframe}"
-                success_sql = self.storage.save_to_sqlite(df_normalized, table_name)
-
-                # Guardar en CSV (para verificación visual)
-                if save_csv and success_sql:
-                    csv_path = f"{self.config.storage.path}/csv"
-                    os.makedirs(csv_path, exist_ok=True)
-                    csv_file = f"{csv_path}/{table_name}.csv"
-                    success_csv = save_to_csv(df_normalized, csv_file)
-
-                    if success_csv:
-                        self.logger.info(f"✅ {symbol}: Datos guardados en SQLite y CSV")
-                    else:
-                        self.logger.warning(f"⚠️ {symbol}: Datos guardados en SQLite, error en CSV")
-
-                # Almacenar datos procesados para devolver
-                processed_data[symbol] = df_normalized
-
-            return processed_data
-
-        except Exception as e:
-            self.logger.error(f"Error procesando datos: {e}")
-            return False
+        for symbol, df in symbol_data.items():
+            try:
+                self.logger.info(f"Procesando datos para {symbol}...")
+                
+                # Procesar/normalizar datos si es necesario
+                df_processed = self._normalize_data(df.copy())
+                
+                # Crear objeto OHLCVData para el storage
+                from .interfaces import OHLCVData
+                ohlcv_data = OHLCVData(df_processed)
+                
+                # Guardar en storage
+                success = self.storage.save_ohlcv_data(symbol, timeframe, ohlcv_data)
+                
+                if success:
+                    processed_data[symbol] = df_processed
+                    self.logger.info(f"✅ Datos procesados y guardados para {symbol}")
+                else:
+                    self.logger.error(f"❌ Error guardando datos para {symbol}")
+                    
+            except Exception as e:
+                self.logger.error(f"Error procesando {symbol}: {e}")
+                
+        return processed_data
 
     def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calcula indicadores técnicos completos"""
@@ -437,17 +449,36 @@ class AdvancedDataDownloader:
         """Cierra todas las conexiones"""
         try:
             # Cerrar exchanges CCXT
-            for exchange in self.ccxt_exchanges.values():
-                await exchange.close()
+            for exchange_name, exchange in self.ccxt_exchanges.items():
+                try:
+                    await exchange.close()
+                    self.logger.info(f"Exchange {exchange_name} cerrado correctamente")
+                except Exception as e:
+                    self.logger.warning(f"Error cerrando exchange {exchange_name}: {e}")
 
             # Cerrar MT5
             if self.mt5_downloader:
-                self.mt5_downloader.shutdown()
+                self.mt5_downloader.close()
 
             self.logger.info("AdvancedDataDownloader cerrado correctamente")
 
         except Exception as e:
             self.logger.error(f"Error en shutdown: {e}")
+
+    def close(self):
+        """Alias para shutdown() para compatibilidad"""
+        # Como shutdown es async, creamos una versión sync que ejecuta el shutdown
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Si hay un loop corriendo, programamos el shutdown
+                asyncio.create_task(self.shutdown())
+            else:
+                # Si no hay loop, ejecutamos directamente
+                loop.run_until_complete(self.shutdown())
+        except Exception as e:
+            self.logger.error(f"Error en close(): {e}")
 
         except Exception as e:
             self.logger.error(f"[ERROR] Error configurando exchanges: {e}")
@@ -494,6 +525,68 @@ class AdvancedDataDownloader:
         except Exception as e:
             self.logger.error(f"[ERROR] Error descargando {symbol} desde {exchange_name}: {e}")
             return None, {"error": str(e)}
+
+    def _normalize_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Normaliza y limpia los datos OHLCV descargados.
+
+        Args:
+            df (pd.DataFrame): DataFrame con datos crudos
+
+        Returns:
+            pd.DataFrame: DataFrame normalizado y limpio
+        """
+        try:
+            # Crear una copia para no modificar el original
+            df_clean = df.copy()
+
+            # Asegurar que timestamp esté en el formato correcto
+            if 'timestamp' in df_clean.columns:
+                df_clean['timestamp'] = pd.to_datetime(df_clean['timestamp'])
+                # Ordenar por timestamp
+                df_clean = df_clean.sort_values('timestamp').reset_index(drop=True)
+
+            # Limpiar valores nulos en columnas OHLCV
+            ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in ohlcv_cols:
+                if col in df_clean.columns:
+                    # Reemplazar valores nulos con el último valor válido (forward fill)
+                    df_clean[col] = df_clean[col].ffill()
+                    # Si aún quedan nulos al inicio, usar backward fill
+                    df_clean[col] = df_clean[col].bfill()
+                    # Convertir a tipos numéricos
+                    df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+
+            # Eliminar filas que aún tengan valores nulos en OHLC
+            essential_cols = ['open', 'high', 'low', 'close']
+            existing_essential = [col for col in essential_cols if col in df_clean.columns]
+            if existing_essential:
+                df_clean = df_clean.dropna(subset=existing_essential)
+
+            # Asegurar que high >= max(open, close) y low <= min(open, close)
+            if all(col in df_clean.columns for col in ['open', 'high', 'low', 'close']):
+                # Corregir high si es menor que max(open, close)
+                df_clean['high'] = df_clean[['high', 'open', 'close']].max(axis=1)
+                # Corregir low si es mayor que min(open, close)
+                df_clean['low'] = df_clean[['low', 'open', 'close']].min(axis=1)
+
+            # Eliminar duplicados basados en timestamp
+            if 'timestamp' in df_clean.columns:
+                df_clean = df_clean.drop_duplicates(subset=['timestamp'], keep='first')
+
+            # Resetear índice
+            df_clean = df_clean.reset_index(drop=True)
+
+            # Calcular indicadores técnicos después de la normalización
+            df_clean = self._calculate_technical_indicators(df_clean)
+
+            self.logger.debug(f"Datos normalizados con indicadores: {len(df_clean)} filas, columnas: {list(df_clean.columns)}")
+
+            return df_clean
+
+        except Exception as e:
+            self.logger.error(f"Error en normalización de datos: {e}")
+            return df  # Retornar datos originales si falla la normalización
 
     async def close_exchanges(self):
         """Cierra todas las conexiones de exchanges"""
