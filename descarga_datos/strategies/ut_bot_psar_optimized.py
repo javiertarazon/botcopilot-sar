@@ -4,7 +4,24 @@ Versión corregida para ser fiel al Pine Script original.
 """
 import numpy as np
 import pandas as pd
-import talib
+try:
+    import talib  # type: ignore
+except ImportError:  # pragma: no cover
+    talib = None
+
+
+def _atr_fallback(df: pd.DataFrame, period: int) -> pd.Series:
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift(1)).abs()
+    low_close = (df["low"] - df["close"].shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.ewm(span=period, adjust=False).mean().fillna(0)
+
+
+def _sar_fallback(df: pd.DataFrame, acceleration: float, maximum: float) -> pd.Series:
+    from utils.technical_indicators_pipeline import calculate_sar
+
+    return calculate_sar(df).fillna(0)
 
 class UTBotPSAROptimizedStrategy:
     """
@@ -84,7 +101,10 @@ class UTBotPSAROptimizedStrategy:
         # ================= CÁLCULOS PRINCIPALES =================
         # xATR = ta.atr(c) - Usar ATR existente o calcular
         if 'atr' not in df.columns:
-            df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=self.atr_period)
+            if talib is not None:
+                df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=self.atr_period)
+            else:
+                df['atr'] = _atr_fallback(df, self.atr_period)
         
         # nLoss = a * xATR
         df['n_loss'] = self.sensitivity * df['atr']
@@ -107,9 +127,15 @@ class UTBotPSAROptimizedStrategy:
         # ================= PARABOLIC SAR =================
         # Usar SAR existente o calcular
         if 'sar' not in df.columns:
-            df['sar'] = talib.SAR(df['high'], df['low'], 
-                                acceleration=self.psar_start, 
-                                maximum=self.psar_max)
+            if talib is not None:
+                df['sar'] = talib.SAR(
+                    df['high'],
+                    df['low'],
+                    acceleration=self.psar_start,
+                    maximum=self.psar_max,
+                )
+            else:
+                df['sar'] = _sar_fallback(df, self.psar_start, self.psar_max)
         
         # psar_bullish = close > psar
         df['psar_bullish'] = df['src'] > df['sar']

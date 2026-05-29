@@ -20,6 +20,7 @@ import os
 from .mt5_downloader import MT5Downloader
 from utils.storage import DataStorage, save_to_csv
 from utils.normalization import DataNormalizer
+from utils.technical_indicators_pipeline import calculate_technical_indicators, calculate_sar
 
 class AdvancedDataDownloader:
     """
@@ -34,6 +35,8 @@ class AdvancedDataDownloader:
 
         # Componentes
         self.ccxt_exchanges = {}
+        # Compatibilidad: código legacy usa `self.exchanges`
+        self.exchanges = self.ccxt_exchanges
         self.mt5_downloader = MT5Downloader(config.mt5) if hasattr(config, 'mt5') else None
         self.storage = DataStorage(f"{config.storage.path}/data.db")
         self.normalizer = DataNormalizer()
@@ -170,33 +173,39 @@ class AdvancedDataDownloader:
         if not self.ccxt_exchanges:
             raise Exception("No hay exchanges CCXT configurados")
 
-        # Usar el primer exchange disponible
-        exchange_name = list(self.ccxt_exchanges.keys())[0]
-        exchange = self.ccxt_exchanges[exchange_name]
+        last_error: Optional[Exception] = None
 
-        try:
-            # Convertir fechas
-            since = int(pd.Timestamp(start_date).timestamp() * 1000)
+        # Intentar en orden: exchange activo primero (si existe), luego el resto
+        preferred = []
+        if getattr(self.config, "active_exchange", None) in self.ccxt_exchanges:
+            preferred.append(self.config.active_exchange)
+        preferred.extend([name for name in self.ccxt_exchanges.keys() if name not in preferred])
 
-            # Descargar datos
-            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=1000)
+        for exchange_name in preferred:
+            exchange = self.ccxt_exchanges[exchange_name]
+            try:
+                since = int(pd.Timestamp(start_date).timestamp() * 1000)
+                ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=1000)
 
-            if not ohlcv:
-                return None
+                if not ohlcv:
+                    self.logger.warning(f"No se recibieron datos para {symbol} en {exchange_name}")
+                    continue
 
-            # Convertir a DataFrame
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
 
-            # Filtrar por fecha fin
-            end_dt = pd.Timestamp(end_date)
-            df = df[df['timestamp'] <= end_dt]
+                end_dt = pd.Timestamp(end_date, tz="UTC")
+                df = df[df["timestamp"] <= end_dt]
+                return df
 
-            return df
+            except Exception as e:
+                last_error = e
+                self.logger.error(f"Error descargando {symbol} desde {exchange_name}: {e}")
+                continue
 
-        except Exception as e:
-            self.logger.error(f"Error descargando {symbol} desde {exchange_name}: {e}")
-            raise e
+        if last_error is not None:
+            raise last_error
+        return None
 
     def _download_stock_symbol(self, symbol: str, timeframe: str,
                              start_date: str, end_date: str) -> Optional[pd.DataFrame]:
@@ -260,58 +269,7 @@ class AdvancedDataDownloader:
     def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calcula indicadores técnicos completos"""
         try:
-            # Copia del DataFrame
-            result_df = df.copy()
-
-            # ATR (Average True Range)
-            high_low = result_df['high'] - result_df['low']
-            high_close = np.abs(result_df['high'] - result_df['close'].shift(1))
-            low_close = np.abs(result_df['low'] - result_df['close'].shift(1))
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            result_df['atr'] = tr.ewm(span=14, adjust=False).mean()
-
-            # ADX (Average Directional Index)
-            high_diff = result_df['high'].diff()
-            low_diff = result_df['low'].diff()
-            plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0)
-            minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0)
-            atr_val = result_df['atr']
-            plus_di = 100 * (pd.Series(plus_dm).ewm(span=14, adjust=False).mean() / atr_val)
-            minus_di = 100 * (pd.Series(minus_dm).ewm(span=14, adjust=False).mean() / atr_val)
-            dx = 100 * np.abs((plus_di - minus_di) / ((plus_di + minus_di) + 1e-9))
-            result_df['adx'] = dx.ewm(span=14, adjust=False).mean()
-
-            # SAR (Parabolic SAR) - Implementación simplificada
-            result_df['sar'] = self._calculate_sar(result_df)
-
-            # RSI
-            delta = result_df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            result_df['rsi'] = 100 - (100 / (1 + rs))
-
-            # MACD
-            ema_12 = result_df['close'].ewm(span=12, adjust=False).mean()
-            ema_26 = result_df['close'].ewm(span=26, adjust=False).mean()
-            result_df['macd'] = ema_12 - ema_26
-            result_df['macd_signal'] = result_df['macd'].ewm(span=9, adjust=False).mean()
-
-            # EMAs necesarias para las estrategias UT Bot
-            result_df['ema_10'] = result_df['close'].ewm(span=10, adjust=False).mean()
-            result_df['ema_20'] = result_df['close'].ewm(span=20, adjust=False).mean()
-            result_df['ema_200'] = result_df['close'].ewm(span=200, adjust=False).mean()
-
-            # Bollinger Bands
-            sma_20 = result_df['close'].rolling(window=20).mean()
-            std_20 = result_df['close'].rolling(window=20).std()
-            result_df['bb_upper'] = sma_20 + (std_20 * 2)
-            result_df['bb_lower'] = sma_20 - (std_20 * 2)
-
-            # Llenar NaN con 0
-            result_df = result_df.fillna(0)
-
-            return result_df
+            return calculate_technical_indicators(df)
 
         except Exception as e:
             self.logger.error(f"Error calculando indicadores: {e}")
@@ -320,52 +278,7 @@ class AdvancedDataDownloader:
     def _calculate_sar(self, df: pd.DataFrame) -> pd.Series:
         """Calcula Parabolic SAR simplificado"""
         try:
-            length = len(df)
-            sar = np.zeros(length)
-            high = df['high'].values
-            low = df['low'].values
-
-            if length > 0:
-                sar[0] = low[0]  # Comenzar con el primer low
-
-            # Parámetros SAR
-            acceleration = 0.02
-            max_acceleration = 0.2
-
-            # Variables de estado
-            trend = 1  # 1 = uptrend, -1 = downtrend
-            extreme_point = high[0] if trend == 1 else low[0]
-            acceleration_factor = acceleration
-
-            for i in range(1, length):
-                # Calcular nuevo SAR
-                sar[i] = sar[i-1] + acceleration_factor * (extreme_point - sar[i-1])
-
-                # Determinar cambio de tendencia
-                if trend == 1:  # Uptrend
-                    if low[i] <= sar[i]:
-                        trend = -1
-                        sar[i] = extreme_point
-                        extreme_point = low[i]
-                        acceleration_factor = acceleration
-                    else:
-                        if high[i] > extreme_point:
-                            extreme_point = high[i]
-                            acceleration_factor = min(acceleration_factor + acceleration, max_acceleration)
-                        sar[i] = min(sar[i], low[i-1], low[i])
-                else:  # Downtrend
-                    if high[i] >= sar[i]:
-                        trend = 1
-                        sar[i] = extreme_point
-                        extreme_point = high[i]
-                        acceleration_factor = acceleration
-                    else:
-                        if low[i] < extreme_point:
-                            extreme_point = low[i]
-                            acceleration_factor = min(acceleration_factor + acceleration, max_acceleration)
-                        sar[i] = max(sar[i], high[i-1], high[i])
-
-            return pd.Series(sar, index=df.index)
+            return calculate_sar(df)
 
         except Exception as e:
             self.logger.error(f"Error calculando SAR: {e}")
@@ -437,21 +350,21 @@ class AdvancedDataDownloader:
         """Cierra todas las conexiones"""
         try:
             # Cerrar exchanges CCXT
-            for exchange in self.ccxt_exchanges.values():
-                await exchange.close()
+            for exchange_name, exchange in list(self.ccxt_exchanges.items()):
+                try:
+                    await exchange.close()
+                except Exception as e:
+                    self.logger.warning(f"Error cerrando exchange {exchange_name}: {e}")
 
             # Cerrar MT5
             if self.mt5_downloader:
                 self.mt5_downloader.shutdown()
 
+            self.ccxt_exchanges.clear()
             self.logger.info("AdvancedDataDownloader cerrado correctamente")
 
         except Exception as e:
             self.logger.error(f"Error en shutdown: {e}")
-
-        except Exception as e:
-            self.logger.error(f"[ERROR] Error configurando exchanges: {e}")
-            return False
 
     async def async_download_ohlcv(self, symbol: str, exchange_name: str,
                                  timeframe: str = '1h', limit: int = 1000) -> tuple:

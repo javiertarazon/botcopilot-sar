@@ -95,7 +95,8 @@ class Config:
         """Obtiene configuración específica para un símbolo"""
         # Configuración básica por defecto para cualquier símbolo
         return {
-            'max_position_size': 1000.0,
+            # Porcentaje máximo del portfolio (ej: 10 = 10%)
+            'max_position_size': 10.0,
             'min_position_size': 10.0,
             'leverage': 1.0,
             'commission': 0.001,

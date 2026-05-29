@@ -4,7 +4,29 @@ Implementación literal del Pine Script con filtros adicionales de calidad
 """
 import numpy as np
 import pandas as pd
-import talib
+try:
+    import talib  # type: ignore
+except ImportError:  # pragma: no cover
+    talib = None
+
+
+def _atr_fallback(df: pd.DataFrame, period: int) -> pd.Series:
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift(1)).abs()
+    low_close = (df["low"] - df["close"].shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.ewm(span=period, adjust=False).mean().fillna(0)
+
+
+def _ema_fallback(series: pd.Series, period: int) -> pd.Series:
+    return series.ewm(span=period, adjust=False).mean().fillna(0)
+
+
+def _sar_fallback(df: pd.DataFrame, acceleration: float, maximum: float) -> pd.Series:
+    # Fallback simple (misma lógica que en utils.technical_indicators_pipeline)
+    from utils.technical_indicators_pipeline import calculate_sar
+
+    return calculate_sar(df).fillna(0)
 
 class UTBotPSARConservativeStrategy:
     """
@@ -78,7 +100,10 @@ class UTBotPSARConservativeStrategy:
         
         # ================= CÁLCULOS PRINCIPALES =================
         if 'atr' not in df.columns:
-            df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=self.atr_period)
+            if talib is not None:
+                df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=self.atr_period)
+            else:
+                df['atr'] = _atr_fallback(df, self.atr_period)
         
         df['n_loss'] = self.sensitivity * df['atr']
         
@@ -97,9 +122,15 @@ class UTBotPSARConservativeStrategy:
             
         # ================= PARABOLIC SAR =================
         if 'sar' not in df.columns:
-            df['sar'] = talib.SAR(df['high'], df['low'], 
-                                acceleration=self.psar_start, 
-                                maximum=self.psar_max)
+            if talib is not None:
+                df['sar'] = talib.SAR(
+                    df['high'],
+                    df['low'],
+                    acceleration=self.psar_start,
+                    maximum=self.psar_max,
+                )
+            else:
+                df['sar'] = _sar_fallback(df, self.psar_start, self.psar_max)
         
         df['psar_bullish'] = df['src'] > df['sar']
         df['psar_bearish'] = df['src'] < df['sar']
@@ -128,7 +159,10 @@ class UTBotPSARConservativeStrategy:
                 strong_downtrend = df['src'] < df['ema_200'] * 0.98  # 2% por debajo
             else:
                 # Calcular EMA 200 si no existe
-                df['ema_200'] = talib.EMA(df['src'], timeperiod=200)
+                if talib is not None:
+                    df['ema_200'] = talib.EMA(df['src'], timeperiod=200)
+                else:
+                    df['ema_200'] = _ema_fallback(df['src'], 200)
                 strong_uptrend = df['src'] > df['ema_200'] * 1.02
                 strong_downtrend = df['src'] < df['ema_200'] * 0.98
         else:

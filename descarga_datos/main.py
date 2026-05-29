@@ -23,6 +23,7 @@ import time
 import webbrowser
 import socket
 import json
+import argparse
 from pathlib import Path
 
 try:
@@ -47,6 +48,26 @@ from utils.logger import setup_logging, get_logger
 from strategies.ut_bot_psar import UTBotPSARStrategy
 from strategies.optimized_utbot_strategy import OptimizedUTBotStrategy
 from backtesting.backtester import AdvancedBacktester
+from execution.paper_trader import run_paper_trading_for_symbol
+from execution.live_trader import run_live_trading, LiveTradingConfig
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Bot Trader Copilot")
+    parser.add_argument(
+        "--mode",
+        choices=["backtest", "paper", "live"],
+        default="backtest",
+        help="Modo de ejecución (default: backtest)",
+    )
+    parser.add_argument("--symbols", nargs="*", help="Override de símbolos (ej: BTC/USDT ETH/USDT)")
+    parser.add_argument("--symbol", help="Símbolo único (útil para live)")
+    parser.add_argument("--timeframe", help="Override timeframe (ej: 1h, 15m)")
+    parser.add_argument("--start-date", help="Override start_date (YYYY-MM-DD)")
+    parser.add_argument("--end-date", help="Override end_date (YYYY-MM-DD)")
+    parser.add_argument("--paper-allow-short", action="store_true", help="Permite short en paper trading")
+    parser.add_argument("--live-poll-seconds", type=int, default=30, help="Polling en live (segundos)")
+    return parser.parse_args(argv)
 
 def check_python_processes(logger=None):
     """
@@ -748,14 +769,27 @@ async def main():
     """
     Función principal del sistema de backtesting masivo.
     """
+    args = parse_args()
     # Cargar configuración centralizada
     config = load_config_from_yaml()
+
+    # Overrides por CLI (para paper/live también)
+    if args.timeframe:
+        config.backtesting.timeframe = args.timeframe
+    if args.start_date:
+        config.backtesting.start_date = args.start_date
+    if args.end_date:
+        config.backtesting.end_date = args.end_date
+    if args.symbols:
+        config.backtesting.symbols = args.symbols
+    if args.symbol:
+        config.backtesting.symbols = [args.symbol]
 
     # Configurar logging
     setup_logging(config.system.log_level, config.system.log_file)
     logger = get_logger(__name__)
 
-    logger.info("[INFO] Iniciando Bot Trader Copilot - Backtesting Masivo")
+    logger.info(f"[INFO] Iniciando Bot Trader Copilot (mode={args.mode})")
     logger.info("=" * 60)
 
     # Mostrar configuración actual
@@ -768,7 +802,42 @@ async def main():
     logger.info(f"[INFO] Estrategias activas: {len(enabled_strategies)}")
     logger.info("=" * 60)
 
-    # Inicializar componentes
+    # Live: no requiere precarga masiva (usa polling), pero sí exchange activo
+    if args.mode == "live":
+        if not active_symbols:
+            raise RuntimeError("Live requiere al menos un símbolo (usa --symbol o backtesting.symbols)")
+
+        enabled_strategies = get_enabled_strategies(config)
+        if not enabled_strategies:
+            raise RuntimeError("No hay estrategias habilitadas en config.backtesting.strategies")
+
+        # Elegir la primera estrategia habilitada (evita ambigüedad en live)
+        strategy_name = enabled_strategies[0]
+        if strategy_name == "Estrategia_Basica":
+            strategy = UTBotPSARStrategy()
+        elif strategy_name == "Estrategia_Conservadora":
+            from strategies.ut_bot_psar_conservative import UTBotPSARConservativeStrategy
+
+            strategy = UTBotPSARConservativeStrategy()
+        else:
+            from strategies.ut_bot_psar_optimized import UTBotPSAROptimizedStrategy
+
+            strategy = UTBotPSAROptimizedStrategy()
+
+        await run_live_trading(
+            strategy=strategy,
+            config=config,
+            logger=logger,
+            live=LiveTradingConfig(
+                symbol=active_symbols[0],
+                timeframe=config.backtesting.timeframe,
+                poll_seconds=int(args.live_poll_seconds),
+                allow_short=False,
+            ),
+        )
+        return
+
+    # Inicializar componentes (backtest/paper)
     downloader = AdvancedDataDownloader(config)
 
     # Verificar MT5
@@ -810,7 +879,45 @@ async def main():
             save_csv=True
         )
 
-        # Procesar backtesting para cada símbolo
+        if args.mode == "paper":
+            enabled_strategies = get_enabled_strategies(config)
+            if not enabled_strategies:
+                raise RuntimeError("No hay estrategias habilitadas en config.backtesting.strategies")
+
+            for symbol, df in processed_symbol_data.items():
+                logger.info(f"\n{'='*60}")
+                logger.info(f"Procesando paper trading: {symbol}")
+                logger.info(f"{'='*60}")
+
+                strategies = {}
+                if "Estrategia_Basica" in enabled_strategies:
+                    strategies["Estrategia_Basica"] = UTBotPSARStrategy()
+                if "Estrategia_Conservadora" in enabled_strategies:
+                    from strategies.ut_bot_psar_conservative import UTBotPSARConservativeStrategy
+
+                    strategies["Estrategia_Conservadora"] = UTBotPSARConservativeStrategy()
+                if "Estrategia_Optimizada" in enabled_strategies:
+                    from strategies.ut_bot_psar_optimized import UTBotPSAROptimizedStrategy
+
+                    strategies["Estrategia_Optimizada"] = UTBotPSAROptimizedStrategy()
+
+                paper_results = {}
+                for strategy_name, strategy in strategies.items():
+                    paper_results[strategy_name] = run_paper_trading_for_symbol(
+                        symbol=symbol,
+                        strategy=strategy,
+                        data=df,
+                        config=config,
+                        logger=logger,
+                        allow_short=bool(args.paper_allow_short),
+                    )
+
+                await save_backtest_results(paper_results, symbol, config, logger)
+
+            logger.info("[PAPER] Finalizado")
+            return
+
+        # === BACKTEST (comportamiento existente) ===
         backtest_results = {}
         for i, (symbol, df) in enumerate(processed_symbol_data.items(), 1):
             logger.info(f"\n{'='*60}")
@@ -825,14 +932,11 @@ async def main():
                 print(f"[DEBUG] No hay resultado para {symbol}")
 
         print(f"[DEBUG] Backtest completado. Total símbolos procesados: {len(backtest_results)}")
-        # Generar reporte final
         generate_backtest_report(backtest_results, config, logger)
 
-        # Guardar resumen global para el dashboard
         if backtest_results:
             await save_global_summary(backtest_results, config, logger)
 
-        # Lanzar dashboard automáticamente si está habilitado
         if hasattr(config.system, 'auto_launch_dashboard') and config.system.auto_launch_dashboard:
             logger.info("📊 Iniciando lanzamiento automático del dashboard...")
             dashboard_launched = launch_dashboard()
@@ -843,7 +947,7 @@ async def main():
                 logger.warning("⚠️ No se pudo iniciar el dashboard automáticamente")
         else:
             logger.info("📊 Dashboard automático deshabilitado")
-            logger.info("💡 Para ver los resultados, ejecuta: python run_dashboard.py")
+            logger.info("💡 Para ver los resultados, ejecuta: python -m streamlit run dash2.py")
 
     finally:
         # Cerrar conexiones

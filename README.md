@@ -99,6 +99,13 @@ trading_bot_env\Scripts\activate  # Windows
 cd descarga_datos
 python main.py
 
+# 5b. Ejecutar paper trading (simulado con ejecución bar-a-bar)
+python main.py --mode paper
+
+# 5c. Ejecutar live trading (CCXT, market orders; recomendado empezar en sandbox)
+# Ejemplo: un solo símbolo en Bybit/Binance
+python main.py --mode live --symbol BTC/USDT --timeframe 1h --live-poll-seconds 30
+
 # 6. Ver dashboard
 cd ..
 streamlit run dash2.py
@@ -820,7 +827,8 @@ def validate_data(df):
 ### **Versión 1.1 - Planificada**
 - [ ] **Machine Learning Integration**: Modelos predictivos
 - [ ] **Portfolio Optimization**: Markowitz optimization
-- [ ] **Real-time Trading**: Conexión live con brokers
+- [x] **Paper Trading**: Ejecución simulada con gestión de riesgo
+- [x] **Live Trading (mínimo)**: Conexión CCXT y market orders (spot long-only)
 - [ ] **Web Dashboard**: Interface gráfica web
 - [ ] **Telegram Bot**: Notificaciones en tiempo real
 - [ ] **Multi-asset Support**: Forex, commodities, índices

@@ -178,6 +178,22 @@ class AdvancedRiskManager:
         """Configura el gestor de configuración"""
         self.config_manager = config_manager
         self.logger.info("[OK] Config manager configurado en Risk Manager")
+
+    def _get_symbol_config_safe(self, symbol: str) -> Dict[str, Any]:
+        """
+        Obtiene configuración por símbolo sin depender de config_manager.
+
+        El motor de ejecución/paper puede usar RiskManager sin un ConfigManager,
+        así que este método evita AttributeError y provee defaults coherentes.
+        """
+        if self.config_manager is None:
+            return {
+                'max_position_size': 10.0,  # %
+                'min_position_size': 10.0,
+                'leverage': 1.0
+            }
+        cfg = self.config_manager.get_symbol_config(symbol)
+        return cfg or {}
     
     def calculate_position_size(self, symbol: str, entry_price: float, 
                               stop_loss_price: float, signal_strength: float = 1.0,
@@ -187,7 +203,8 @@ class AdvancedRiskManager:
             # Si no hay config_manager, usar configuración básica
             if self.config_manager is None:
                 symbol_config = {
-                    'max_position_size': 1000.0,
+                    # Porcentaje máximo del portfolio (ej: 10 = 10%)
+                    'max_position_size': 10.0,
                     'min_position_size': 10.0,
                     'leverage': 1.0
                 }
@@ -430,7 +447,7 @@ class AdvancedRiskManager:
             warnings.append(f"Alto riesgo: {position_risk_percent:.1f}% del portfolio")
         
         # Warning por concentración
-        symbol_config = self.config_manager.get_symbol_config(symbol)
+        symbol_config = self._get_symbol_config_safe(symbol)
         if symbol_config and position_value > self.portfolio_value * 0.25:
             warnings.append("Alta concentración en un solo activo")
         
@@ -1123,12 +1140,11 @@ class AdvancedRiskManager:
         total_exposure = 0
         
         for position in self.positions.values():
-            symbol_config = self.config_manager.get_symbol_config(position.symbol)
-            if symbol_config:
-                sector = symbol_config.asset_type
-                exposure = position.quantity * position.current_price
-                sector_exposure[sector] = sector_exposure.get(sector, 0) + exposure
-                total_exposure += exposure
+            symbol_config = self._get_symbol_config_safe(position.symbol)
+            sector = symbol_config.get("asset_type", "unknown")
+            exposure = position.quantity * position.current_price
+            sector_exposure[sector] = sector_exposure.get(sector, 0) + exposure
+            total_exposure += exposure
         
         # Convertir a porcentajes
         if total_exposure > 0:
@@ -1148,10 +1164,10 @@ class AdvancedRiskManager:
             return False, f"Drawdown excede límite: {self.current_drawdown*100:.1f}%"
         
         # Verificar exposición por sector
-        symbol_config = self.config_manager.get_symbol_config(symbol)
+        symbol_config = self._get_symbol_config_safe(symbol)
         if symbol_config:
             sector_concentration = self._calculate_sector_concentration()
-            current_sector_exposure = sector_concentration.get(symbol_config.asset_type, 0)
+            current_sector_exposure = sector_concentration.get(symbol_config.get("asset_type", "unknown"), 0)
             new_exposure_pct = (position_value / self.portfolio_value) * 100
             
             if current_sector_exposure + new_exposure_pct > self.max_sector_exposure * 100:
