@@ -1,0 +1,56 @@
+name: Sync superpowers
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Checkout superpowers (sparse)
+        uses: actions/checkout@v4
+        with:
+          repository: javiertarazon/superpowers
+          ref: main
+          path: .tmp/superpowers
+          sparse-checkout: |
+            skills
+
+      - name: Sync skills
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .github/superpowers
+
+          rsync -a --delete \
+            .tmp/superpowers/skills/ \
+            .github/superpowers/skills/
+
+          superpowers_sha="$(git -C .tmp/superpowers rev-parse HEAD)"
+          synced_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          cat > .github/superpowers/SOURCE.txt <<EOF
+          repo=javiertarazon/superpowers
+          ref=main
+          sha=${superpowers_sha}
+          synced_at=${synced_at}
+          EOF
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          commit-message: "chore: sync superpowers"
+          title: "chore: sync superpowers"
+          body: "Automated sync of `.github/superpowers/skills` from `javiertarazon/superpowers`."
+          branch: "chore/sync-superpowers"
+          delete-branch: true
