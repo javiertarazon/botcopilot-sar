@@ -5,11 +5,29 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 import logging
 from config.config import NormalizationConfig
 
 logger = logging.getLogger(__name__)
+
+try:
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+    _SKLEARN_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    StandardScaler = MinMaxScaler = RobustScaler = None
+    _SKLEARN_AVAILABLE = False
+    logger.warning("scikit-learn no disponible, normalización en modo no-op")
+
+
+class _IdentityScaler:
+    def fit(self, X):
+        return self
+
+    def transform(self, X):
+        return X
+
+    def inverse_transform(self, X):
+        return X
 
 
 class DataNormalizer:
@@ -60,14 +78,17 @@ class DataNormalizer:
                 continue
                 
             # Inicializar el escalador según la configuración
-            if self.config.method.lower() == "standard":
-                scaler = StandardScaler(with_mean=self.config.with_mean, with_std=self.config.with_std)
-            elif self.config.method.lower() == "minmax":
-                scaler = MinMaxScaler(feature_range=self.config.feature_range)
-            elif self.config.method.lower() == "robust":
-                scaler = RobustScaler(quantile_range=self.config.quantile_range)
+            if not _SKLEARN_AVAILABLE:
+                scaler = _IdentityScaler()
             else:
-                scaler = MinMaxScaler(feature_range=self.config.feature_range)  # Por defecto
+                if self.config.method.lower() == "standard":
+                    scaler = StandardScaler(with_mean=self.config.with_mean, with_std=self.config.with_std)
+                elif self.config.method.lower() == "minmax":
+                    scaler = MinMaxScaler(feature_range=self.config.feature_range)
+                elif self.config.method.lower() == "robust":
+                    scaler = RobustScaler(quantile_range=self.config.quantile_range)
+                else:
+                    scaler = MinMaxScaler(feature_range=self.config.feature_range)  # Por defecto
             
             # Ajustar el escalador con los datos no nulos
             feature_data = data[feature].values.reshape(-1, 1)

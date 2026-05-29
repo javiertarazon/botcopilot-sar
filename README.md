@@ -106,6 +106,25 @@ streamlit run dash2.py
 
 ---
 
+## 🧪 Paper Trading (OKX + CCXT)
+
+Ejecuta un paper trader **local** (no envía órdenes) usando datos de mercado de **OKX** vía **CCXT** y la estrategia unificada.
+
+1) (Opcional) activa OKX en `descarga_datos/config/config.yaml` (`exchanges.okx.*`). Para solo datos públicos no necesitas API keys.  
+2) Ejecuta:
+
+```bash
+cd descarga_datos
+python paper_trader_okx.py --symbol BTC/USDT --timeframe 1h --max-iterations 1
+```
+
+Parámetros útiles:
+- `--min-score 0.65` (umbral de oportunidad)
+- `--quote-per-trade 250` (USDT por trade)
+- `--allow-short` (habilita shorts en paper)
+
+---
+
 ## 📊 Dashboard Profesional
 
 ### 🏆 Características del Dashboard

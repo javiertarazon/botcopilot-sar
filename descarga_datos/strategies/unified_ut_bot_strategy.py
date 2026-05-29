@@ -624,6 +624,81 @@ class UnifiedUTBotPSARStrategy:
                 'filters_applied': []
             }
 
+    def analyze_latest(self, data: pd.DataFrame, symbol: str) -> Dict[str, Any]:
+        """
+        Analiza la última vela y devuelve una oportunidad de trading (paper/live).
+
+        Retorna:
+        - signal: "buy" | "sell" | None
+        - score: 0..1
+        - stop_loss / take_profit / position_size sugeridos (si hay señal)
+        """
+        self.current_symbol = symbol
+        self.current_regime = self._detect_market_regime(data)
+
+        data_with_indicators = self._calculate_all_indicators(data)
+        data_filtered = self._apply_quality_filters(data_with_indicators)
+        data_with_signals = self._generate_ut_bot_signals(data_filtered)
+
+        last = data_with_signals.iloc[-1]
+        signal: Optional[str] = None
+        if bool(last.get("buy_signal", False)):
+            signal = "buy"
+        elif bool(last.get("sell_signal", False)):
+            signal = "sell"
+
+        adx = float(last.get("adx", 0.0) or 0.0)
+        volatility = float(last.get("volatility", 0.0) or 0.0)
+        quality = bool(last.get("quality_filter", False))
+
+        score = 0.0
+        reasons: list[str] = []
+
+        if signal:
+            score += 0.55
+            reasons.append(f"signal={signal}")
+        if quality:
+            score += 0.15
+            reasons.append("quality_filter=pass")
+
+        adx_threshold = float(getattr(self.config, "adx_threshold", 25.0) or 25.0)
+        adx_component = min(adx / max(adx_threshold, 1.0), 2.0) / 2.0
+        score += 0.2 * adx_component
+        reasons.append(f"adx={adx:.2f}")
+
+        if volatility > 0.08:
+            score -= 0.1
+            reasons.append(f"high_volatility={volatility:.4f}")
+        else:
+            score += 0.05
+            reasons.append(f"volatility={volatility:.4f}")
+
+        regime = self.current_regime.value if hasattr(self.current_regime, "value") else str(self.current_regime)
+        if "trending" in regime:
+            score += 0.05
+            reasons.append(f"regime={regime}")
+
+        score = max(0.0, min(1.0, score))
+
+        position_mgmt: Dict[str, Any] = {}
+        if signal:
+            price = float(last["close"])
+            position_mgmt = self._calculate_position_management(
+                data_with_signals.iloc[max(0, len(data_with_signals) - 20):], signal, price
+            )
+
+        ts = last.name if hasattr(last, "name") else None
+        return {
+            "symbol": symbol,
+            "timestamp": ts,
+            "regime": regime,
+            "signal": signal,
+            "score": score,
+            "reasons": reasons,
+            "price": float(last["close"]),
+            **position_mgmt,
+        }
+
     def get_strategy_info(self) -> Dict:
         """Retorna información detallada sobre la estrategia unificada"""
         return {

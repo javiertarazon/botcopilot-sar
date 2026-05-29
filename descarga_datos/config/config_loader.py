@@ -14,6 +14,7 @@ class ExchangeConfig:
     enabled: bool = False
     api_key: str = ""
     api_secret: str = ""
+    password: str = ""
     sandbox: bool = False
     timeout: int = 30000
 

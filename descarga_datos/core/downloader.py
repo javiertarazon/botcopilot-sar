@@ -92,6 +92,21 @@ class AdvancedDataDownloader:
                 success_count += 1
                 self.logger.info("Binance configurado")
 
+            # Configurar OKX
+            if 'okx' in self.config.exchanges and self.config.exchanges['okx'].enabled:
+                exchange_config = self.config.exchanges['okx']
+                okx = ccxt_async.okx({
+                    'apiKey': exchange_config.api_key or '',
+                    'secret': exchange_config.api_secret or '',
+                    'password': getattr(exchange_config, 'password', '') or '',
+                    'timeout': exchange_config.timeout,
+                })
+                if getattr(exchange_config, 'sandbox', False) and hasattr(okx, "set_sandbox_mode"):
+                    okx.set_sandbox_mode(True)
+                self.ccxt_exchanges['okx'] = okx
+                success_count += 1
+                self.logger.info("OKX configurado")
+
             return success_count > 0
 
         except Exception as e:
@@ -170,8 +185,9 @@ class AdvancedDataDownloader:
         if not self.ccxt_exchanges:
             raise Exception("No hay exchanges CCXT configurados")
 
-        # Usar el primer exchange disponible
-        exchange_name = list(self.ccxt_exchanges.keys())[0]
+        # Preferir el exchange activo si está disponible
+        active_exchange = getattr(self.config, "active_exchange", None)
+        exchange_name = active_exchange if active_exchange in self.ccxt_exchanges else list(self.ccxt_exchanges.keys())[0]
         exchange = self.ccxt_exchanges[exchange_name]
 
         try:

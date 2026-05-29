@@ -28,6 +28,14 @@ exchanges:
     sandbox: false
     timeout: 30000
 
+  okx:
+    enabled: false
+    api_key: ""
+    api_secret: ""
+    password: ""
+    sandbox: true
+    timeout: 30000
+
 # Configuración MT5
 mt5:
   enabled: true
