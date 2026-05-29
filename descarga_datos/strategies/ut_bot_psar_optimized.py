@@ -21,7 +21,7 @@ def _atr_fallback(df: pd.DataFrame, period: int) -> pd.Series:
 def _sar_fallback(df: pd.DataFrame, acceleration: float, maximum: float) -> pd.Series:
     from utils.technical_indicators_pipeline import calculate_sar
 
-    return calculate_sar(df).fillna(0)
+    return calculate_sar(df, acceleration=acceleration, max_acceleration=maximum).fillna(0)
 
 class UTBotPSAROptimizedStrategy:
     """

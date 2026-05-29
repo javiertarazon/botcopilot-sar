@@ -26,7 +26,7 @@ def _sar_fallback(df: pd.DataFrame, acceleration: float, maximum: float) -> pd.S
     # Fallback simple (misma lógica que en utils.technical_indicators_pipeline)
     from utils.technical_indicators_pipeline import calculate_sar
 
-    return calculate_sar(df).fillna(0)
+    return calculate_sar(df, acceleration=acceleration, max_acceleration=maximum).fillna(0)
 
 class UTBotPSARConservativeStrategy:
     """

@@ -106,6 +106,10 @@ python main.py --mode paper
 # Ejemplo: un solo símbolo en Bybit/Binance
 python main.py --mode live --symbol BTC/USDT --timeframe 1h --live-poll-seconds 30
 
+# 5d. Optimizar parámetros (random search) sobre un CSV OHLCV
+# Guarda el top-N en `data/optimization_results/<symbol>_<strategy>.json`
+python main.py --mode optimize --strategy optimizada --opt-iters 200 --opt-top 10
+
 # 6. Ver dashboard
 cd ..
 streamlit run dash2.py

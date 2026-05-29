@@ -15,7 +15,11 @@ import numpy as np
 import pandas as pd
 
 
-def calculate_sar(df: pd.DataFrame) -> pd.Series:
+def calculate_sar(
+    df: pd.DataFrame,
+    acceleration: float = 0.02,
+    max_acceleration: float = 0.2,
+) -> pd.Series:
     """Calcula Parabolic SAR simplificado (misma lógica que el downloader)."""
     length = len(df)
     sar = np.zeros(length, dtype=float)
@@ -26,9 +30,6 @@ def calculate_sar(df: pd.DataFrame) -> pd.Series:
     low = df["low"].to_numpy(dtype=float, copy=False)
 
     sar[0] = low[0]
-
-    acceleration = 0.02
-    max_acceleration = 0.2
 
     trend = 1  # 1 = uptrend, -1 = downtrend
     extreme_point = high[0]
@@ -118,4 +119,3 @@ def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     result_df["bb_lower"] = sma_20 - (std_20 * 2)
 
     return result_df.fillna(0)
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import math
 import random
@@ -9,14 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
-import numpy as np
 
 try:
     import requests
 except ImportError:  # pragma: no cover
     requests = None
 
-from utils.technical_indicators_pipeline import calculate_technical_indicators
 from backtesting.backtester import AdvancedBacktester
 from strategies.ut_bot_psar import UTBotPSARStrategy
 from strategies.ut_bot_psar_conservative import UTBotPSARConservativeStrategy
@@ -49,7 +48,7 @@ def load_ohlcv_dataframe_from_csv_url(url: str) -> pd.DataFrame:
     timestamp puede venir en ms unix o en string datetime.
     """
     content = _load_csv_from_url(url)
-    df = pd.read_csv(pd.io.common.BytesIO(content))
+    df = pd.read_csv(io.BytesIO(content))
 
     # Normalizar columnas
     if "timestamp" not in df.columns:
@@ -134,7 +133,7 @@ def _sample_params(rng: random.Random, space: Dict[str, List[Any]]) -> Dict[str,
 
 def evaluate_candidate(
     symbol: str,
-    data_with_indicators: pd.DataFrame,
+    data: pd.DataFrame,
     strategy_key: str,
     params: Dict[str, Any],
     initial_capital: float,
@@ -142,7 +141,7 @@ def evaluate_candidate(
 ) -> CandidateResult:
     strategy = _make_strategy(strategy_key, params)
     backtester = AdvancedBacktester(initial_capital=initial_capital, commission=commission_percent)
-    result = backtester.run(strategy, data_with_indicators, symbol)
+    result = backtester.run(strategy, data, symbol)
 
     total_trades = float(result.get("total_trades", 0) or 0)
     win_rate = float(result.get("win_rate", 0) or 0) * 100.0
@@ -176,7 +175,6 @@ def random_search(
     commission_percent: float,
     top_n: int,
 ) -> List[CandidateResult]:
-    df_ind = calculate_technical_indicators(df_ohlcv)
     rng = random.Random(seed)
     space = _param_space(strategy_key)
 
@@ -192,7 +190,7 @@ def random_search(
 
         cand = evaluate_candidate(
             symbol=symbol,
-            data_with_indicators=df_ind,
+            data=df_ohlcv,
             strategy_key=strategy_key,
             params=params,
             initial_capital=initial_capital,
@@ -225,4 +223,3 @@ def save_optimization_results(
         ],
     }
     out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-

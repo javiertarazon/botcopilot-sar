@@ -8,6 +8,25 @@ try:
 except ImportError:  # pragma: no cover
     talib = None
 
+
+def _atr_fallback(df: pd.DataFrame, period: int) -> pd.Series:
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift(1)).abs()
+    low_close = (df["low"] - df["close"].shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.ewm(span=period, adjust=False).mean().fillna(0)
+
+
+def _ema_fallback(series: pd.Series, period: int) -> pd.Series:
+    return series.ewm(span=period, adjust=False).mean().fillna(0)
+
+
+def _sar_fallback(df: pd.DataFrame, acceleration: float, maximum: float) -> pd.Series:
+    from utils.technical_indicators_pipeline import calculate_sar
+
+    return calculate_sar(df, acceleration=acceleration, max_acceleration=maximum).fillna(0)
+
+
 class UTBotPSARStrategy:
     def __init__(self, 
                  sensitivity=1,
@@ -49,32 +68,55 @@ class UTBotPSARStrategy:
         Calcula las señales usando los indicadores ya existentes en los datos.
         Los datos deben contener: atr, sar, ema_10, ema_20, ema_200
         """
+        df = df.copy()
+
+        # Asegurar indicadores mínimos (permitimos que vengan pre-calculados)
+        if "atr" not in df.columns:
+            if talib is not None:
+                df["atr"] = talib.ATR(df["high"], df["low"], df["close"], timeperiod=self.atr_period)
+            else:
+                df["atr"] = _atr_fallback(df, self.atr_period)
+
+        if "sar" not in df.columns:
+            if talib is not None:
+                df["sar"] = talib.SAR(df["high"], df["low"], acceleration=self.psar_start, maximum=self.psar_max)
+            else:
+                df["sar"] = _sar_fallback(df, self.psar_start, self.psar_max)
+
+        if "ema_10" not in df.columns:
+            df["ema_10"] = _ema_fallback(df["close"], 10)
+        if "ema_200" not in df.columns:
+            df["ema_200"] = _ema_fallback(df["close"], 200)
+
+        # Fuente de precio (Heikin Ashi opcional)
         if self.use_heikin_ashi:
-            df = self.calculate_heikin_ashi(df)
-            price_col = 'ha_close'
+            ha_df = self.calculate_heikin_ashi(df)
+            df["ha_close"] = ha_df["close"]
+            df["ha_high"] = ha_df["high"]
+            df["ha_low"] = ha_df["low"]
+            price_col = "ha_close"
         else:
-            # Agregar columnas como alias para compatibilidad
-            df['ha_close'] = df['close']
-            df['ha_high'] = df['high']
-            df['ha_low'] = df['low']
-            price_col = 'close'
+            df["ha_close"] = df["close"]
+            df["ha_high"] = df["high"]
+            df["ha_low"] = df["low"]
+            price_col = "close"
 
         # Usar ATR existente
-        df['n_loss'] = self.sensitivity * df['atr']
+        df["n_loss"] = self.sensitivity * df["atr"]
 
         # Usar SAR existente
-        df['psar'] = df['sar']  # Renombrar para mantener consistencia con el código
-        df['psar_bullish'] = df[price_col] > df['sar']
-        df['psar_bearish'] = df[price_col] < df['sar']
-        df['psar_trend_change'] = df['psar_bullish'] != df['psar_bullish'].shift(1)
+        df["psar"] = df["sar"]  # Renombrar para mantener consistencia con el código
+        df["psar_bullish"] = df[price_col] > df["sar"]
+        df["psar_bearish"] = df[price_col] < df["sar"]
+        df["psar_trend_change"] = df["psar_bullish"] != df["psar_bullish"].shift(1)
 
         # Calcular trailing stop
         trailing_stop = pd.Series(index=df.index, dtype=float)
-        current_stop = df['ha_close'].iloc[0]
+        current_stop = df["ha_close"].iloc[0]
         
         for i in range(len(df)):
             price = df[price_col].iloc[i]
-            n_loss = df['n_loss'].iloc[i]
+            n_loss = df["n_loss"].iloc[i]
             
             if i == 0:
                 trailing_stop.iloc[i] = price - n_loss if price > current_stop else price + n_loss
@@ -82,21 +124,20 @@ class UTBotPSARStrategy:
                 
             prev_stop = trailing_stop.iloc[i-1]
             
-            if price > prev_stop and df[price_col].iloc[i-1] > prev_stop:
+            if price > prev_stop and df[price_col].iloc[i - 1] > prev_stop:
                 current_stop = max(prev_stop, price - n_loss)
-            elif price < prev_stop and df[price_col].iloc[i-1] < prev_stop:
+            elif price < prev_stop and df[price_col].iloc[i - 1] < prev_stop:
                 current_stop = min(prev_stop, price + n_loss)
             else:
                 current_stop = price - n_loss if price > prev_stop else price + n_loss
                 
             trailing_stop.iloc[i] = current_stop
             
-        df = df.copy()  # Crear una copia para evitar SettingWithCopyWarning
-        df['trailing_stop'] = trailing_stop
+        df["trailing_stop"] = trailing_stop
 
         # Calcular señales de entrada usando EMA existente (usaremos ema_10 como señal rápida)
-        df['above'] = (df['ema_10'] > df['trailing_stop']) & (df['ema_10'].shift(1) <= df['trailing_stop'].shift(1))
-        df['below'] = (df['ema_10'] < df['trailing_stop']) & (df['ema_10'].shift(1) >= df['trailing_stop'].shift(1))
+        df["above"] = (df["ema_10"] > df["trailing_stop"]) & (df["ema_10"].shift(1) <= df["trailing_stop"].shift(1))
+        df["below"] = (df["ema_10"] < df["trailing_stop"]) & (df["ema_10"].shift(1) >= df["trailing_stop"].shift(1))
 
         # Confirmar señales con tendencia (usando ema_200 como referencia de tendencia)
         long_trend = df[price_col] > df['ema_200']

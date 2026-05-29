@@ -39,9 +39,11 @@ sys.path.append(project_root)
 sys.path.append(parent_root)
 sys.path.append(grandparent_root)
 
-from core.downloader import AdvancedDataDownloader
-from indicators.technical_indicators import TechnicalIndicators
-from utils.normalization import DataNormalizer
+try:
+    from core.downloader import AdvancedDataDownloader
+except ImportError:  # pragma: no cover
+    AdvancedDataDownloader = None  # type: ignore[assignment]
+
 from utils.storage import DataStorage, save_to_csv
 from config.config_loader import load_config_from_yaml, get_active_exchanges, get_enabled_strategies
 from utils.logger import setup_logging, get_logger
@@ -49,7 +51,12 @@ from strategies.ut_bot_psar import UTBotPSARStrategy
 from strategies.optimized_utbot_strategy import OptimizedUTBotStrategy
 from backtesting.backtester import AdvancedBacktester
 from execution.paper_trader import run_paper_trading_for_symbol
-from execution.live_trader import run_live_trading, LiveTradingConfig
+
+try:
+    from execution.live_trader import run_live_trading, LiveTradingConfig
+except ImportError:  # pragma: no cover
+    run_live_trading = None  # type: ignore[assignment]
+    LiveTradingConfig = None  # type: ignore[assignment]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -804,6 +811,89 @@ async def main():
     logger.info(f"[INFO] Iniciando Bot Trader Copilot (mode={args.mode})")
     logger.info("=" * 60)
 
+    # === OPTIMIZE (random search) ===
+    # Nota: se ejecuta de forma aislada (sin descarga CCXT/MT5) a partir de un CSV OHLCV.
+    if args.mode == "optimize":
+        from optimization.parameter_search import (
+            DEFAULT_SOL_1H_CSV_URL,
+            load_ohlcv_dataframe_from_csv_url,
+            random_search,
+            save_optimization_results,
+        )
+
+        strategy_key = args.strategy or "optimizada"
+        symbol = args.symbol or "SOLUSDT"
+        url = args.opt_data_url or DEFAULT_SOL_1H_CSV_URL
+
+        logger.info("[OPTIMIZE] Descargando dataset OHLCV...")
+        logger.info(f"[OPTIMIZE] url={url}")
+        df = load_ohlcv_dataframe_from_csv_url(url)
+
+        # Filtro opcional por fechas (solo si se pasó por CLI)
+        if args.start_date:
+            start_ts = pd.to_datetime(args.start_date, utc=True, errors="coerce")
+            if start_ts is not pd.NaT:
+                df = df[df["timestamp"] >= start_ts].reset_index(drop=True)
+        if args.end_date:
+            end_ts = pd.to_datetime(args.end_date, utc=True, errors="coerce")
+            if end_ts is not pd.NaT:
+                df = df[df["timestamp"] <= end_ts].reset_index(drop=True)
+
+        if df.empty:
+            raise RuntimeError("Dataset vacío tras aplicar filtros (start/end).")
+
+        logger.info(f"[OPTIMIZE] Filas: {len(df)}")
+        logger.info(f"[OPTIMIZE] symbol={symbol} strategy={strategy_key} iters={args.opt_iters} seed={args.opt_seed}")
+
+        results = random_search(
+            symbol=symbol,
+            strategy_key=strategy_key,
+            df_ohlcv=df,
+            iters=int(args.opt_iters),
+            seed=int(args.opt_seed),
+            initial_capital=float(config.backtesting.initial_capital),
+            commission_percent=float(config.backtesting.commission),
+            top_n=int(args.opt_top),
+        )
+
+        safe_symbol = symbol.replace("/", "_").replace(":", "_")
+        out_path = Path(config.storage.path) / "optimization_results" / f"{safe_symbol}_{strategy_key}.json"
+
+        save_optimization_results(
+            out_path=out_path,
+            symbol=symbol,
+            strategy_key=strategy_key,
+            results=results,
+            meta={
+                "url": url,
+                "iters": int(args.opt_iters),
+                "seed": int(args.opt_seed),
+                "top_n": int(args.opt_top),
+                "initial_capital": float(config.backtesting.initial_capital),
+                "commission_percent": float(config.backtesting.commission),
+                "timeframe": args.timeframe,
+                "start_date": args.start_date,
+                "end_date": args.end_date,
+            },
+        )
+
+        logger.info(f"[OPTIMIZE] Guardado: {out_path}")
+        for i, r in enumerate(results, 1):
+            m = r.metrics
+            logger.info(
+                "[OPTIMIZE] #%d score=%.3f roi=%.2f%% dd=%.2f%% win_rate=%.1f%% trades=%d params=%s",
+                i,
+                float(m.get("score", 0.0)),
+                float(m.get("total_pnl_percent", 0.0)),
+                float(m.get("max_drawdown_percent_abs", 0.0)),
+                float(m.get("win_rate_percent", 0.0)),
+                int(m.get("total_trades", 0.0)),
+                json.dumps(r.params, ensure_ascii=False),
+            )
+
+        logger.info("[OPTIMIZE] Finalizado")
+        return
+
     # Mostrar configuración actual
     active_symbols = config.backtesting.symbols
     logger.info(f"[INFO] Simbolos a procesar: {len(active_symbols)}")
@@ -816,6 +906,11 @@ async def main():
 
     # Live: no requiere precarga masiva (usa polling), pero sí exchange activo
     if args.mode == "live":
+        if run_live_trading is None or LiveTradingConfig is None:
+            raise RuntimeError(
+                "Live trading requiere dependencias CCXT instaladas. "
+                "Instala `ccxt` y vuelve a ejecutar (ver requirements.txt)."
+            )
         if not active_symbols:
             raise RuntimeError("Live requiere al menos un símbolo (usa --symbol o backtesting.symbols)")
 
@@ -850,6 +945,11 @@ async def main():
         return
 
     # Inicializar componentes (backtest/paper)
+    if AdvancedDataDownloader is None:
+        raise RuntimeError(
+            "Backtest/paper requiere dependencias CCXT instaladas. "
+            "Instala `ccxt` y vuelve a ejecutar (ver requirements.txt)."
+        )
     downloader = AdvancedDataDownloader(config)
 
     # Verificar MT5
