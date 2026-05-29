@@ -56,7 +56,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bot Trader Copilot")
     parser.add_argument(
         "--mode",
-        choices=["backtest", "paper", "live"],
+        choices=["backtest", "paper", "live", "optimize"],
         default="backtest",
         help="Modo de ejecución (default: backtest)",
     )
@@ -68,6 +68,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--exchange", help="Override active_exchange (ej: okx, bybit, binance)")
     parser.add_argument("--paper-allow-short", action="store_true", help="Permite short en paper trading")
     parser.add_argument("--live-poll-seconds", type=int, default=30, help="Polling en live (segundos)")
+    parser.add_argument("--strategy", choices=["basica", "conservadora", "optimizada"], help="Estrategia para optimize/live")
+    parser.add_argument("--opt-iters", type=int, default=200, help="Iteraciones de optimización (random search)")
+    parser.add_argument("--opt-seed", type=int, default=42, help="Seed para optimización")
+    parser.add_argument("--opt-data-url", help="URL CSV OHLCV (default: SOLUSDT_1h dataset)")
+    parser.add_argument("--opt-top", type=int, default=10, help="Top N resultados a mostrar/guardar")
     return parser.parse_args(argv)
 
 def check_python_processes(logger=None):
