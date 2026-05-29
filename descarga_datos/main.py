@@ -78,6 +78,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs="*",
         help="Timeframes a comparar en mode=compare (ej: 5m 15m 1h 4h). Default: 5m 15m 1h 4h",
     )
+    parser.add_argument(
+        "--compare-data-url",
+        help="CSV OHLCV (path/URL) para mode=compare. Si se pasa, no usa CCXT y resamplea desde este timeframe base.",
+    )
+    parser.add_argument(
+        "--compare-data-timeframe",
+        default="5m",
+        help="Timeframe del CSV base en --compare-data-url (default: 5m).",
+    )
     parser.add_argument("--paper-allow-short", action="store_true", help="Permite short en paper trading")
     parser.add_argument("--live-poll-seconds", type=int, default=30, help="Polling en live (segundos)")
     parser.add_argument("--strategy", choices=["basica", "conservadora", "optimizada"], help="Estrategia para optimize/live")
@@ -94,6 +103,88 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--opt-top", type=int, default=10, help="Top N resultados a mostrar/guardar")
     parser.add_argument("--opt-max-dd-percent", type=float, help="Máximo drawdown permitido (porcentaje, solo Optuna)")
     return parser.parse_args(argv)
+
+def _timeframe_to_minutes(timeframe: str) -> int:
+    tf = timeframe.strip().lower()
+    if tf.endswith("m"):
+        return int(tf[:-1])
+    if tf.endswith("h"):
+        return int(tf[:-1]) * 60
+    if tf.endswith("d"):
+        return int(tf[:-1]) * 60 * 24
+    raise ValueError(f"Timeframe no soportado: {timeframe}")
+
+
+def _timeframe_to_pandas_rule(timeframe: str) -> str:
+    tf = timeframe.strip().lower()
+    if tf.endswith("m"):
+        return f"{int(tf[:-1])}min"
+    if tf.endswith("h"):
+        return f"{int(tf[:-1])}h"
+    if tf.endswith("d"):
+        return f"{int(tf[:-1])}d"
+    raise ValueError(f"Timeframe no soportado: {timeframe}")
+
+
+def _load_ohlcv_csv(url_or_path: str) -> pd.DataFrame:
+    import io
+
+    if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+        if requests is None:
+            raise RuntimeError("requests no está disponible para descargar CSV")
+        r = requests.get(url_or_path, timeout=30)
+        r.raise_for_status()
+        raw = io.BytesIO(r.content)
+        df = pd.read_csv(raw)
+    else:
+        df = pd.read_csv(url_or_path)
+
+    if df.empty:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+    cols_lower = {c: str(c).strip().lower() for c in df.columns}
+    df = df.rename(columns=cols_lower)
+
+    ts_col = None
+    for cand in ("timestamp", "datetime", "date", "time", "open_time"):
+        if cand in df.columns:
+            ts_col = cand
+            break
+    if ts_col is None:
+        raise ValueError("CSV no tiene columna de tiempo (timestamp/datetime/date/time/open_time)")
+
+    ts_series = df[ts_col]
+    if pd.api.types.is_numeric_dtype(ts_series):
+        df["timestamp"] = pd.to_datetime(ts_series.astype("int64"), unit="ms", utc=True, errors="coerce")
+    else:
+        df["timestamp"] = pd.to_datetime(ts_series, utc=True, errors="coerce")
+
+    for col in ("open", "high", "low", "close", "volume"):
+        if col not in df.columns:
+            raise ValueError(f"CSV no tiene columna requerida: {col}")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"])
+    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
+    return df[["timestamp", "open", "high", "low", "close", "volume"]]
+
+
+def _resample_ohlcv(df: pd.DataFrame, *, timeframe: str) -> pd.DataFrame:
+    rule = _timeframe_to_pandas_rule(timeframe)
+    if df.empty:
+        return df
+
+    df2 = df.copy()
+    df2 = df2.set_index("timestamp").sort_index()
+    resampled = df2.resample(rule, label="left", closed="left").agg(
+        open=("open", "first"),
+        high=("high", "max"),
+        low=("low", "min"),
+        close=("close", "last"),
+        volume=("volume", "sum"),
+    )
+    resampled = resampled.dropna(subset=["open", "high", "low", "close"]).reset_index()
+    return resampled[["timestamp", "open", "high", "low", "close", "volume"]]
 
 def _profit_factor_from_trades(trades: list[dict]) -> float:
     gross_profit = sum(float(t.get("pnl", 0.0) or 0.0) for t in trades if float(t.get("pnl", 0.0) or 0.0) > 0)
@@ -155,12 +246,65 @@ async def compare_timeframes_for_symbol(*, symbol: str, timeframes: list[str], c
             "Instala `ccxt` y vuelve a ejecutar (ver requirements.txt)."
         )
 
+    comparison_rows: list[dict] = []
+    initial_capital = float(config.backtesting.initial_capital)
+
+    # Si hay CSV base, evitar CCXT y resamplear.
+    if getattr(config, "_compare_data_url", None):
+        from utils.technical_indicators_pipeline import calculate_technical_indicators
+
+        base_url = str(getattr(config, "_compare_data_url"))
+        base_tf = str(getattr(config, "_compare_data_timeframe"))
+        df_base = _load_ohlcv_csv(base_url)
+
+        start_ts = pd.to_datetime(config.backtesting.start_date, utc=True, errors="coerce")
+        end_ts = pd.to_datetime(config.backtesting.end_date, utc=True, errors="coerce")
+        if start_ts is not pd.NaT:
+            df_base = df_base[df_base["timestamp"] >= start_ts].reset_index(drop=True)
+        if end_ts is not pd.NaT:
+            df_base = df_base[df_base["timestamp"] <= end_ts].reset_index(drop=True)
+
+        base_minutes = _timeframe_to_minutes(base_tf)
+
+        for tf in timeframes:
+            tf_minutes = _timeframe_to_minutes(tf)
+            if tf_minutes < base_minutes:
+                raise RuntimeError(f"No se puede comparar timeframe={tf} desde base={base_tf} (necesitas CSV más granular).")
+
+            df = df_base if tf_minutes == base_minutes else _resample_ohlcv(df_base, timeframe=tf)
+            if df.empty:
+                logger.warning(f"[COMPARE] CSV sin datos para timeframe={tf} tras filtros")
+                continue
+
+            df = calculate_technical_indicators(df)
+            config.backtesting.timeframe = tf
+            strategies_results = await run_backtest(df, symbol, config)
+            if not strategies_results:
+                logger.warning(f"[COMPARE] Sin resultados para {symbol} timeframe={tf}")
+                continue
+
+            best_strategy_name = None
+            best_metrics = None
+            best_score = None
+            for strategy_name, res in strategies_results.items():
+                metrics = _extract_metrics(res, initial_capital=initial_capital)
+                score = _score_metrics(metrics)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_metrics = metrics
+                    best_strategy_name = strategy_name
+
+            assert best_metrics is not None
+            comparison_rows.append({"timeframe": tf, "strategy": best_strategy_name, "score": float(best_score or 0.0), **best_metrics})
+
+        comparison_rows = sorted(comparison_rows, key=lambda r: float(r.get("score", 0.0)), reverse=True)
+        return {"symbol": symbol, "start_date": config.backtesting.start_date, "end_date": config.backtesting.end_date, "rows": comparison_rows}
+
     downloader = AdvancedDataDownloader(config)
     success = await downloader.initialize()
     if not success:
         raise RuntimeError("No se pudo inicializar el downloader")
 
-    comparison_rows: list[dict] = []
     try:
         for tf in timeframes:
             logger.info(f"[COMPARE] Descargando y backtesteando {symbol} timeframe={tf} ...")
@@ -182,7 +326,6 @@ async def compare_timeframes_for_symbol(*, symbol: str, timeframes: list[str], c
                 logger.warning(f"[COMPARE] Sin resultados para {symbol} timeframe={tf}")
                 continue
 
-            initial_capital = float(config.backtesting.initial_capital)
             best_strategy_name = None
             best_metrics = None
             best_score = None
@@ -196,22 +339,10 @@ async def compare_timeframes_for_symbol(*, symbol: str, timeframes: list[str], c
                     best_strategy_name = strategy_name
 
             assert best_metrics is not None
-            comparison_rows.append(
-                {
-                    "timeframe": tf,
-                    "strategy": best_strategy_name,
-                    "score": float(best_score or 0.0),
-                    **best_metrics,
-                }
-            )
+            comparison_rows.append({"timeframe": tf, "strategy": best_strategy_name, "score": float(best_score or 0.0), **best_metrics})
 
         comparison_rows = sorted(comparison_rows, key=lambda r: float(r.get("score", 0.0)), reverse=True)
-        return {
-            "symbol": symbol,
-            "start_date": config.backtesting.start_date,
-            "end_date": config.backtesting.end_date,
-            "rows": comparison_rows,
-        }
+        return {"symbol": symbol, "start_date": config.backtesting.start_date, "end_date": config.backtesting.end_date, "rows": comparison_rows}
     finally:
         try:
             await downloader.shutdown()
@@ -965,6 +1096,10 @@ async def main():
             config.backtesting.end_date = end_ts.strftime("%Y-%m-%d")
 
         timeframes = args.compare_timeframes or ["5m", "15m", "1h", "4h"]
+        if args.compare_data_url:
+            # Pasar parámetros a la función sin expandir la firma pública del CLI
+            setattr(config, "_compare_data_url", args.compare_data_url)
+            setattr(config, "_compare_data_timeframe", args.compare_data_timeframe)
         comparison = await compare_timeframes_for_symbol(symbol=symbol, timeframes=timeframes, config=config, logger=logger)
 
         out_dir = Path(config.storage.path) / "timeframe_comparisons"
