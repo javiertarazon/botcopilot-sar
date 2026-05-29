@@ -95,6 +95,18 @@ class AdvancedDataDownloader:
                 success_count += 1
                 self.logger.info("Binance configurado")
 
+            # Configurar OKX
+            if 'okx' in self.config.exchanges and self.config.exchanges['okx'].enabled:
+                exchange_config = self.config.exchanges['okx']
+                self.ccxt_exchanges['okx'] = ccxt_async.okx({
+                    'apiKey': exchange_config.api_key or '',
+                    'secret': exchange_config.api_secret or '',
+                    'sandbox': exchange_config.sandbox,
+                    'timeout': exchange_config.timeout,
+                })
+                success_count += 1
+                self.logger.info("OKX configurado")
+
             return success_count > 0
 
         except Exception as e:

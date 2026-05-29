@@ -65,6 +65,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeframe", help="Override timeframe (ej: 1h, 15m)")
     parser.add_argument("--start-date", help="Override start_date (YYYY-MM-DD)")
     parser.add_argument("--end-date", help="Override end_date (YYYY-MM-DD)")
+    parser.add_argument("--exchange", help="Override active_exchange (ej: okx, bybit, binance)")
     parser.add_argument("--paper-allow-short", action="store_true", help="Permite short en paper trading")
     parser.add_argument("--live-poll-seconds", type=int, default=30, help="Polling en live (segundos)")
     return parser.parse_args(argv)
@@ -784,6 +785,12 @@ async def main():
         config.backtesting.symbols = args.symbols
     if args.symbol:
         config.backtesting.symbols = [args.symbol]
+    if args.exchange:
+        config.active_exchange = args.exchange
+        # Asegurar que el exchange seleccionado esté habilitado para esta ejecución
+        if args.exchange in config.exchanges:
+            for name, ex_cfg in config.exchanges.items():
+                ex_cfg.enabled = (name == args.exchange)
 
     # Configurar logging
     setup_logging(config.system.log_level, config.system.log_file)
