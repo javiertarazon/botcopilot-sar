@@ -21,6 +21,11 @@ try:
 except ImportError:  # pragma: no cover
     optuna = None
 
+try:
+    import ccxt  # type: ignore
+except ImportError:  # pragma: no cover
+    ccxt = None
+
 from backtesting.backtester import AdvancedBacktester
 from strategies.ut_bot_psar import UTBotPSARStrategy
 from strategies.ut_bot_psar_conservative import UTBotPSARConservativeStrategy
@@ -66,33 +71,132 @@ def _load_csv_from_url(url: str, timeout_seconds: int = 30) -> bytes:
     return r.content
 
 
-def load_ohlcv_dataframe_from_csv_url(url: str) -> pd.DataFrame:
+def load_ohlcv_dataframe_from_csv(url_or_path: str) -> pd.DataFrame:
     """
     Carga un CSV OHLCV con columnas: timestamp, open, high, low, close, volume.
     timestamp puede venir en ms unix o en string datetime.
     """
-    content = _load_csv_from_url(url)
-    df = pd.read_csv(io.BytesIO(content))
+    if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+        content = _load_csv_from_url(url_or_path)
+        df = pd.read_csv(io.BytesIO(content))
+    else:
+        df = pd.read_csv(url_or_path)
 
-    # Normalizar columnas
-    if "timestamp" not in df.columns:
-        raise ValueError("CSV debe incluir columna 'timestamp'")
+    # Normalizar nombres de columnas (case-insensitive) y soportar formatos comunes:
+    # - timestamp, open, high, low, close, volume (ms unix o datetime)
+    # - Datetime, Open, High, Low, Close, Volume, Turnover (Bybit dumps)
+    colmap = {c.lower(): c for c in df.columns}
 
-    if df["timestamp"].dtype == "object":
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    ts_col = None
+    if "timestamp" in colmap:
+        ts_col = colmap["timestamp"]
+    elif "datetime" in colmap:
+        ts_col = colmap["datetime"]
+    elif "date" in colmap:
+        ts_col = colmap["date"]
+    elif "time" in colmap:
+        ts_col = colmap["time"]
+
+    if ts_col is None:
+        raise ValueError("CSV debe incluir columna temporal ('timestamp' o 'Datetime')")
+
+    def _pick(required: str) -> str:
+        key = required.lower()
+        if key in colmap:
+            return colmap[key]
+        raise ValueError(f"CSV debe incluir columna '{required}'")
+
+    open_col = _pick("open")
+    high_col = _pick("high")
+    low_col = _pick("low")
+    close_col = _pick("close")
+    volume_col = _pick("volume")
+
+    ts_series = df[ts_col]
+    if ts_series.dtype == "object":
+        df["timestamp"] = pd.to_datetime(ts_series, utc=True, errors="coerce")
     else:
         # asumir ms unix
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True, errors="coerce")
+        df["timestamp"] = pd.to_datetime(ts_series, unit="ms", utc=True, errors="coerce")
 
-    for col in ["open", "high", "low", "close", "volume"]:
-        if col not in df.columns:
-            raise ValueError(f"CSV debe incluir columna '{col}'")
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["open"] = pd.to_numeric(df[open_col], errors="coerce")
+    df["high"] = pd.to_numeric(df[high_col], errors="coerce")
+    df["low"] = pd.to_numeric(df[low_col], errors="coerce")
+    df["close"] = pd.to_numeric(df[close_col], errors="coerce")
+    df["volume"] = pd.to_numeric(df[volume_col], errors="coerce")
 
     df = df.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"])
     df = df.sort_values("timestamp").reset_index(drop=True)
     return df[["timestamp", "open", "high", "low", "close", "volume"]]
 
+
+def download_ohlcv_dataframe_via_ccxt(
+    *,
+    exchange_name: str,
+    symbol: str,
+    timeframe: str,
+    start_ts: pd.Timestamp,
+    end_ts: Optional[pd.Timestamp] = None,
+    limit_per_request: int = 1000,
+) -> pd.DataFrame:
+    """
+    Descarga OHLCV (timestamp, open, high, low, close, volume) via CCXT paginando con `since`.
+    No requiere credenciales para mercados spot públicos.
+    """
+    if ccxt is None:
+        raise RuntimeError("ccxt no está instalado. Instala `ccxt` para descargar OHLCV vía exchange.")
+
+    if start_ts.tzinfo is None:
+        start_ts = start_ts.tz_localize("UTC")
+    if end_ts is not None and end_ts.tzinfo is None:
+        end_ts = end_ts.tz_localize("UTC")
+
+    exchange_cls = getattr(ccxt, exchange_name, None)
+    if exchange_cls is None:
+        raise ValueError(f"Exchange CCXT no soportado: {exchange_name}")
+
+    exchange = exchange_cls({"enableRateLimit": True})
+    try:
+        since_ms = int(start_ts.timestamp() * 1000)
+        end_ms = int(end_ts.timestamp() * 1000) if end_ts is not None else None
+
+        all_rows: list[list[float]] = []
+        last_ts: Optional[int] = None
+
+        while True:
+            batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since_ms, limit=int(limit_per_request))
+            if not batch:
+                break
+
+            # Evitar loops si el exchange repite el último candle
+            if last_ts is not None and int(batch[-1][0]) == last_ts:
+                break
+            last_ts = int(batch[-1][0])
+
+            for row in batch:
+                ts = int(row[0])
+                if end_ms is not None and ts > end_ms:
+                    break
+                all_rows.append([float(x) for x in row[:6]])
+
+            if end_ms is not None and int(batch[-1][0]) >= end_ms:
+                break
+
+            # Avanzar `since` al siguiente ms para evitar duplicados
+            since_ms = int(batch[-1][0]) + 1
+
+        if not all_rows:
+            return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+
+        df = pd.DataFrame(all_rows, columns=["timestamp_ms", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp_ms"].astype("int64"), unit="ms", utc=True, errors="coerce")
+        df = df.dropna(subset=["timestamp"]).drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+        return df[["timestamp", "open", "high", "low", "close", "volume"]]
+    finally:
+        try:
+            exchange.close()
+        except Exception:
+            pass
 
 def _profit_factor_from_trades(trades: List[Dict[str, Any]]) -> float:
     gross_profit = sum(t.get("pnl", 0.0) for t in trades if t.get("pnl", 0.0) > 0)

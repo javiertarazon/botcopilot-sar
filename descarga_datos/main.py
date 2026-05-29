@@ -80,6 +80,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--opt-iters", type=int, default=200, help="Iteraciones de optimización (random search)")
     parser.add_argument("--opt-seed", type=int, default=42, help="Seed para optimización")
     parser.add_argument("--opt-data-url", help="URL CSV OHLCV (default: SOLUSDT_1h dataset)")
+    parser.add_argument(
+        "--opt-data-source",
+        choices=["csv", "ccxt"],
+        default="csv",
+        help="Fuente de datos para optimize (default: csv)",
+    )
     parser.add_argument("--opt-top", type=int, default=10, help="Top N resultados a mostrar/guardar")
     parser.add_argument("--opt-max-dd-percent", type=float, help="Máximo drawdown permitido (porcentaje, solo Optuna)")
     return parser.parse_args(argv)
@@ -818,7 +824,8 @@ async def main():
     if args.mode == "optimize":
         from optimization.parameter_search import (
             DEFAULT_SOL_1H_CSV_URL,
-            load_ohlcv_dataframe_from_csv_url,
+            download_ohlcv_dataframe_via_ccxt,
+            load_ohlcv_dataframe_from_csv,
             optuna_search,
             random_search,
             save_optimization_results,
@@ -829,8 +836,31 @@ async def main():
         url = args.opt_data_url or DEFAULT_SOL_1H_CSV_URL
 
         logger.info("[OPTIMIZE] Descargando dataset OHLCV...")
-        logger.info(f"[OPTIMIZE] url={url}")
-        df = load_ohlcv_dataframe_from_csv_url(url)
+        if args.opt_data_source == "ccxt":
+            exchange_name = args.exchange or str(getattr(config, "active_exchange", "bybit"))
+            tf = args.timeframe or str(getattr(config.backtesting, "timeframe", "15m"))
+            if not args.symbol:
+                raise RuntimeError("Optimize (ccxt) requiere `--symbol` (ej: SOL/USDT)")
+
+            end_ts = pd.Timestamp.now(tz="UTC")
+            start_ts = end_ts - pd.Timedelta(days=365)
+            if args.start_date:
+                start_ts = pd.to_datetime(args.start_date, utc=True, errors="coerce")
+            if args.end_date:
+                end_ts = pd.to_datetime(args.end_date, utc=True, errors="coerce")
+
+            logger.info(f"[OPTIMIZE] ccxt exchange={exchange_name} symbol={args.symbol} timeframe={tf}")
+            logger.info(f"[OPTIMIZE] ccxt periodo: {start_ts} -> {end_ts}")
+            df = download_ohlcv_dataframe_via_ccxt(
+                exchange_name=exchange_name,
+                symbol=args.symbol,
+                timeframe=tf,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+        else:
+            logger.info(f"[OPTIMIZE] csv={url}")
+            df = load_ohlcv_dataframe_from_csv(url)
 
         # Info de período del dataset
         try:
