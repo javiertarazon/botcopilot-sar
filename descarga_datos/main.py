@@ -240,12 +240,6 @@ def _score_metrics(metrics: dict) -> float:
 
 
 async def compare_timeframes_for_symbol(*, symbol: str, timeframes: list[str], config, logger) -> dict:
-    if AdvancedDataDownloader is None:
-        raise RuntimeError(
-            "Compare requiere dependencias CCXT instaladas. "
-            "Instala `ccxt` y vuelve a ejecutar (ver requirements.txt)."
-        )
-
     comparison_rows: list[dict] = []
     initial_capital = float(config.backtesting.initial_capital)
 
@@ -254,7 +248,7 @@ async def compare_timeframes_for_symbol(*, symbol: str, timeframes: list[str], c
         from utils.technical_indicators_pipeline import calculate_technical_indicators
 
         base_url = str(getattr(config, "_compare_data_url"))
-        base_tf = str(getattr(config, "_compare_data_timeframe"))
+        base_tf = str(getattr(config, "_compare_data_timeframe", "5m"))
         df_base = _load_ohlcv_csv(base_url)
 
         start_ts = pd.to_datetime(config.backtesting.start_date, utc=True, errors="coerce")
@@ -299,6 +293,12 @@ async def compare_timeframes_for_symbol(*, symbol: str, timeframes: list[str], c
 
         comparison_rows = sorted(comparison_rows, key=lambda r: float(r.get("score", 0.0)), reverse=True)
         return {"symbol": symbol, "start_date": config.backtesting.start_date, "end_date": config.backtesting.end_date, "rows": comparison_rows}
+
+    if AdvancedDataDownloader is None:
+        raise RuntimeError(
+            "Compare requiere dependencias CCXT instaladas cuando no se usa --compare-data-url. "
+            "Instala `ccxt` y vuelve a ejecutar (ver requirements.txt)."
+        )
 
     downloader = AdvancedDataDownloader(config)
     success = await downloader.initialize()
