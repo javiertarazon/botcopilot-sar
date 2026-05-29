@@ -193,22 +193,59 @@ class AdvancedDataDownloader:
             preferred.append(self.config.active_exchange)
         preferred.extend([name for name in self.ccxt_exchanges.keys() if name not in preferred])
 
+        start_ts = pd.Timestamp(start_date, tz="UTC")
+        end_ts = pd.Timestamp(end_date, tz="UTC")
+        if end_ts < start_ts:
+            raise ValueError(f"Rango inválido: end_date({end_date}) < start_date({start_date})")
+
+        limit_per_request = int(getattr(getattr(self.config, "data", None), "limit_per_request", 1000) or 1000)
+        if limit_per_request <= 0:
+            limit_per_request = 1000
+
         for exchange_name in preferred:
             exchange = self.ccxt_exchanges[exchange_name]
             try:
-                since = int(pd.Timestamp(start_date).timestamp() * 1000)
-                ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=1000)
+                since_ms = int(start_ts.timestamp() * 1000)
+                end_ms = int(end_ts.timestamp() * 1000)
 
-                if not ohlcv:
+                all_rows: list[list[float]] = []
+                last_ts: Optional[int] = None
+
+                while True:
+                    batch = await exchange.fetch_ohlcv(
+                        symbol,
+                        timeframe=timeframe,
+                        since=since_ms,
+                        limit=limit_per_request,
+                    )
+                    if not batch:
+                        break
+
+                    # Evitar loops si el exchange repite el último candle
+                    if last_ts is not None and int(batch[-1][0]) == last_ts:
+                        break
+                    last_ts = int(batch[-1][0])
+
+                    for row in batch:
+                        ts = int(row[0])
+                        if ts > end_ms:
+                            break
+                        all_rows.append([float(x) for x in row[:6]])
+
+                    if int(batch[-1][0]) >= end_ms:
+                        break
+
+                    # Avanzar `since` al siguiente ms para evitar duplicados
+                    since_ms = int(batch[-1][0]) + 1
+
+                if not all_rows:
                     self.logger.warning(f"No se recibieron datos para {symbol} en {exchange_name}")
                     continue
 
-                df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-
-                end_dt = pd.Timestamp(end_date, tz="UTC")
-                df = df[df["timestamp"] <= end_dt]
-                return df
+                df = pd.DataFrame(all_rows, columns=["timestamp_ms", "open", "high", "low", "close", "volume"])
+                df["timestamp"] = pd.to_datetime(df["timestamp_ms"].astype("int64"), unit="ms", utc=True, errors="coerce")
+                df = df.dropna(subset=["timestamp"]).drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+                return df[["timestamp", "open", "high", "low", "close", "volume"]]
 
             except Exception as e:
                 last_error = e

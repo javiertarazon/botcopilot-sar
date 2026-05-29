@@ -63,7 +63,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bot Trader Copilot")
     parser.add_argument(
         "--mode",
-        choices=["backtest", "paper", "live", "optimize"],
+        choices=["backtest", "paper", "live", "optimize", "compare"],
         default="backtest",
         help="Modo de ejecución (default: backtest)",
     )
@@ -73,6 +73,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-date", help="Override start_date (YYYY-MM-DD)")
     parser.add_argument("--end-date", help="Override end_date (YYYY-MM-DD)")
     parser.add_argument("--exchange", help="Override active_exchange (ej: okx, bybit, binance)")
+    parser.add_argument(
+        "--compare-timeframes",
+        nargs="*",
+        help="Timeframes a comparar en mode=compare (ej: 5m 15m 1h 4h). Default: 5m 15m 1h 4h",
+    )
     parser.add_argument("--paper-allow-short", action="store_true", help="Permite short en paper trading")
     parser.add_argument("--live-poll-seconds", type=int, default=30, help="Polling en live (segundos)")
     parser.add_argument("--strategy", choices=["basica", "conservadora", "optimizada"], help="Estrategia para optimize/live")
@@ -89,6 +94,129 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--opt-top", type=int, default=10, help="Top N resultados a mostrar/guardar")
     parser.add_argument("--opt-max-dd-percent", type=float, help="Máximo drawdown permitido (porcentaje, solo Optuna)")
     return parser.parse_args(argv)
+
+def _profit_factor_from_trades(trades: list[dict]) -> float:
+    gross_profit = sum(float(t.get("pnl", 0.0) or 0.0) for t in trades if float(t.get("pnl", 0.0) or 0.0) > 0)
+    gross_loss = abs(sum(float(t.get("pnl", 0.0) or 0.0) for t in trades if float(t.get("pnl", 0.0) or 0.0) < 0))
+    if gross_loss == 0:
+        return float("inf") if gross_profit > 0 else 0.0
+    return gross_profit / gross_loss
+
+
+def _extract_metrics(result: dict, *, initial_capital: float) -> dict:
+    total_pnl = float(result.get("total_pnl", 0.0) or 0.0)
+    roi = result.get("total_pnl_percent", None)
+    if roi is None:
+        roi = (total_pnl / initial_capital) * 100 if initial_capital else 0.0
+    roi = float(roi or 0.0)
+
+    win_rate = float(result.get("win_rate", 0.0) or 0.0)
+    win_rate_percent = win_rate if win_rate > 1.0 else (win_rate * 100.0)
+
+    dd_percent = None
+    if "max_drawdown_percent_abs" in result:
+        dd_percent = abs(float(result.get("max_drawdown_percent_abs", 0.0) or 0.0))
+    elif "max_drawdown_percent" in result:
+        dd_percent = abs(float(result.get("max_drawdown_percent", 0.0) or 0.0))
+    else:
+        max_drawdown = float(result.get("max_drawdown", 0.0) or 0.0)
+        dd_percent = (abs(max_drawdown) / initial_capital) * 100 if initial_capital else 0.0
+
+    profit_factor = result.get("profit_factor", None)
+    if profit_factor is None:
+        trades = result.get("trades", []) or []
+        profit_factor = _profit_factor_from_trades(trades) if isinstance(trades, list) else 0.0
+
+    return {
+        "total_pnl": total_pnl,
+        "total_pnl_percent": roi,
+        "win_rate_percent": float(win_rate_percent),
+        "max_drawdown_percent_abs": float(dd_percent),
+        "total_trades": int(result.get("total_trades", 0) or 0),
+        "profit_factor": float(profit_factor or 0.0),
+    }
+
+
+def _score_metrics(metrics: dict) -> float:
+    # Score multiobjetivo simple: ROI + win_rate - drawdown, con PF como desempate.
+    import math
+
+    roi = float(metrics.get("total_pnl_percent", 0.0) or 0.0)
+    win_rate = float(metrics.get("win_rate_percent", 0.0) or 0.0)
+    dd = float(metrics.get("max_drawdown_percent_abs", 0.0) or 0.0)
+    pf = float(metrics.get("profit_factor", 0.0) or 0.0)
+    return (roi * 1.0) + (win_rate * 0.15) + (math.log1p(max(pf, 0.0)) * 2.0) - (dd * 0.8)
+
+
+async def compare_timeframes_for_symbol(*, symbol: str, timeframes: list[str], config, logger) -> dict:
+    if AdvancedDataDownloader is None:
+        raise RuntimeError(
+            "Compare requiere dependencias CCXT instaladas. "
+            "Instala `ccxt` y vuelve a ejecutar (ver requirements.txt)."
+        )
+
+    downloader = AdvancedDataDownloader(config)
+    success = await downloader.initialize()
+    if not success:
+        raise RuntimeError("No se pudo inicializar el downloader")
+
+    comparison_rows: list[dict] = []
+    try:
+        for tf in timeframes:
+            logger.info(f"[COMPARE] Descargando y backtesteando {symbol} timeframe={tf} ...")
+            symbol_data = await downloader.download_multiple_symbols(
+                [symbol],
+                timeframe=tf,
+                start_date=config.backtesting.start_date,
+                end_date=config.backtesting.end_date,
+            )
+            processed_symbol_data = await downloader.process_and_save_data(symbol_data, tf, save_csv=False)
+            df = processed_symbol_data.get(symbol)
+            if df is None or df.empty:
+                logger.warning(f"[COMPARE] Sin datos para {symbol} timeframe={tf}")
+                continue
+
+            config.backtesting.timeframe = tf
+            strategies_results = await run_backtest(df, symbol, config)
+            if not strategies_results:
+                logger.warning(f"[COMPARE] Sin resultados para {symbol} timeframe={tf}")
+                continue
+
+            initial_capital = float(config.backtesting.initial_capital)
+            best_strategy_name = None
+            best_metrics = None
+            best_score = None
+
+            for strategy_name, res in strategies_results.items():
+                metrics = _extract_metrics(res, initial_capital=initial_capital)
+                score = _score_metrics(metrics)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_metrics = metrics
+                    best_strategy_name = strategy_name
+
+            assert best_metrics is not None
+            comparison_rows.append(
+                {
+                    "timeframe": tf,
+                    "strategy": best_strategy_name,
+                    "score": float(best_score or 0.0),
+                    **best_metrics,
+                }
+            )
+
+        comparison_rows = sorted(comparison_rows, key=lambda r: float(r.get("score", 0.0)), reverse=True)
+        return {
+            "symbol": symbol,
+            "start_date": config.backtesting.start_date,
+            "end_date": config.backtesting.end_date,
+            "rows": comparison_rows,
+        }
+    finally:
+        try:
+            await downloader.shutdown()
+        except Exception:
+            pass
 
 def check_python_processes(logger=None):
     """
@@ -818,6 +946,56 @@ async def main():
 
     logger.info(f"[INFO] Iniciando Bot Trader Copilot (mode={args.mode})")
     logger.info("=" * 60)
+
+    # === COMPARE TIMEFRAMES ===
+    if args.mode == "compare":
+        # Evitar abrir dashboard en un run batch
+        if hasattr(config.system, "auto_launch_dashboard"):
+            config.system.auto_launch_dashboard = False
+
+        if not config.backtesting.symbols:
+            raise RuntimeError("Compare requiere un símbolo (usa --symbol o backtesting.symbols)")
+        symbol = config.backtesting.symbols[0]
+
+        # Default: último año, si no se overrideó por CLI.
+        if not args.start_date and not args.end_date:
+            end_ts = pd.Timestamp.now(tz="UTC")
+            start_ts = end_ts - pd.Timedelta(days=365)
+            config.backtesting.start_date = start_ts.strftime("%Y-%m-%d")
+            config.backtesting.end_date = end_ts.strftime("%Y-%m-%d")
+
+        timeframes = args.compare_timeframes or ["5m", "15m", "1h", "4h"]
+        comparison = await compare_timeframes_for_symbol(symbol=symbol, timeframes=timeframes, config=config, logger=logger)
+
+        out_dir = Path(config.storage.path) / "timeframe_comparisons"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_symbol = symbol.replace("/", "_").replace(":", "_")
+        out_path = out_dir / f"{safe_symbol}_{comparison['start_date']}_{comparison['end_date']}.json"
+        out_path.write_text(json.dumps(comparison, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        rows = comparison.get("rows", [])
+        if rows:
+            logger.info("[COMPARE] Resultados (mejor -> peor por score):")
+            logger.info("timeframe | strategy | pnl | roi% | win_rate% | max_dd% | trades | score")
+            for r in rows:
+                logger.info(
+                    "%s | %s | %.2f | %.2f | %.1f | %.2f | %d | %.3f",
+                    r.get("timeframe"),
+                    r.get("strategy"),
+                    float(r.get("total_pnl", 0.0)),
+                    float(r.get("total_pnl_percent", 0.0)),
+                    float(r.get("win_rate_percent", 0.0)),
+                    float(r.get("max_drawdown_percent_abs", 0.0)),
+                    int(r.get("total_trades", 0)),
+                    float(r.get("score", 0.0)),
+                )
+            logger.info(f"[COMPARE] Guardado: {out_path}")
+            logger.info(f"[COMPARE] Mejor timeframe: {rows[0].get('timeframe')} (strategy={rows[0].get('strategy')})")
+        else:
+            logger.warning("[COMPARE] No se generaron filas de comparación (sin datos o sin resultados).")
+            logger.info(f"[COMPARE] Guardado: {out_path}")
+
+        return
 
     # === OPTIMIZE (random search) ===
     # Nota: se ejecuta de forma aislada (sin descarga CCXT/MT5) a partir de un CSV OHLCV.
