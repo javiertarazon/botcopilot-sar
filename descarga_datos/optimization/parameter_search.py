@@ -39,6 +39,25 @@ class CandidateResult:
     metrics: Dict[str, float]
 
 
+def _max_drawdown_from_trade_pnls(trade_pnls: List[float], initial_capital: float) -> float:
+    """
+    Calcula max drawdown absoluto (>=0) sobre una curva de equity por-trade.
+    """
+    if initial_capital <= 0:
+        return 0.0
+    equity = initial_capital
+    peak = initial_capital
+    max_dd = 0.0
+    for pnl in trade_pnls:
+        equity += float(pnl)
+        if equity > peak:
+            peak = equity
+        dd = peak - equity
+        if dd > max_dd:
+            max_dd = dd
+    return float(max_dd)
+
+
 def _load_csv_from_url(url: str, timeout_seconds: int = 30) -> bytes:
     if requests is None:
         raise RuntimeError("requests no está disponible para descargar CSV")
@@ -152,27 +171,37 @@ def evaluate_candidate(
     win_rate = float(result.get("win_rate", 0) or 0) * 100.0
     total_pnl = float(result.get("total_pnl", 0) or 0)
     total_pnl_percent = float(result.get("total_pnl_percent", 0) or 0)
-    max_dd = float(result.get("max_drawdown", 0) or 0)
-    max_dd_percent = float(result.get("max_drawdown_percent", 0) or 0)
+    max_dd_raw = float(result.get("max_drawdown", 0) or 0)
+    max_dd_percent_raw = float(result.get("max_drawdown_percent", 0) or 0)
     sharpe_ratio = float(result.get("sharpe_ratio", 0) or 0)
     sortino_ratio = float(result.get("sortino_ratio", 0) or 0)
     calmar_ratio = float(result.get("calmar_ratio", 0) or 0)
 
     # Profit factor: si no viene, lo calculamos desde trades.
     trades = result.get("trades", []) or []
+    trade_pnls = [float(t.get("pnl", 0.0) or 0.0) for t in trades if isinstance(t, dict)]
     profit_factor = float(result.get("profit_factor", 0) or 0)
     if profit_factor == 0 and trades:
         profit_factor = float(_profit_factor_from_trades(trades))
+
+    # Max drawdown: priorizar cálculo desde equity por-trade (evita bugs en estrategias que retornan DD raw mal definido).
+    max_dd_abs = 0.0
+    if trade_pnls and initial_capital:
+        max_dd_abs = _max_drawdown_from_trade_pnls(trade_pnls, initial_capital=float(initial_capital))
+    else:
+        max_dd_abs = abs(max_dd_raw)
+
+    max_dd_percent_abs = (max_dd_abs / float(initial_capital)) * 100.0 if initial_capital else 0.0
 
     metrics = {
         "total_trades": total_trades,
         "win_rate_percent": win_rate,
         "total_pnl": total_pnl,
         "total_pnl_percent": total_pnl_percent if total_pnl_percent else ((total_pnl / initial_capital) * 100.0 if initial_capital else 0.0),
-        "max_drawdown": max_dd,
-        "max_drawdown_abs": abs(max_dd),
-        "max_drawdown_percent": max_dd_percent,
-        "max_drawdown_percent_abs": abs(max_dd_percent),
+        "max_drawdown_raw": max_dd_raw,
+        "max_drawdown_percent_raw": max_dd_percent_raw,
+        "max_drawdown_abs": max_dd_abs,
+        "max_drawdown_percent_abs": max_dd_percent_abs,
         "sharpe_ratio": sharpe_ratio,
         "sortino_ratio": sortino_ratio,
         "calmar_ratio": calmar_ratio,
@@ -231,6 +260,7 @@ def optuna_search(
     initial_capital: float,
     commission_percent: float,
     top_n: int,
+    max_drawdown_percent_limit: Optional[float] = None,
 ) -> List[CandidateResult]:
     """
     Optimización con Optuna (TPE) maximizando `score`.
@@ -255,6 +285,10 @@ def optuna_search(
             commission_percent=commission_percent,
         )
         trial.set_user_attr("metrics", cand.metrics)
+        dd_percent = float(cand.metrics.get("max_drawdown_percent_abs", 0.0) or 0.0)
+        if max_drawdown_percent_limit is not None and dd_percent > float(max_drawdown_percent_limit):
+            # Penalización fuerte para imponer restricción dura de DD.
+            return -1e9
         return float(cand.metrics.get("score", 0.0))
 
     sampler = optuna.samplers.TPESampler(seed=seed)

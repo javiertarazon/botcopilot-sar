@@ -81,6 +81,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--opt-seed", type=int, default=42, help="Seed para optimización")
     parser.add_argument("--opt-data-url", help="URL CSV OHLCV (default: SOLUSDT_1h dataset)")
     parser.add_argument("--opt-top", type=int, default=10, help="Top N resultados a mostrar/guardar")
+    parser.add_argument("--opt-max-dd-percent", type=float, help="Máximo drawdown permitido (porcentaje, solo Optuna)")
     return parser.parse_args(argv)
 
 def check_python_processes(logger=None):
@@ -831,6 +832,14 @@ async def main():
         logger.info(f"[OPTIMIZE] url={url}")
         df = load_ohlcv_dataframe_from_csv_url(url)
 
+        # Info de período del dataset
+        try:
+            min_ts = df["timestamp"].min()
+            max_ts = df["timestamp"].max()
+            logger.info(f"[OPTIMIZE] Periodo dataset: {min_ts} -> {max_ts} (rows={len(df)})")
+        except Exception:
+            pass
+
         # Filtro opcional por fechas (solo si se pasó por CLI)
         if args.start_date:
             start_ts = pd.to_datetime(args.start_date, utc=True, errors="coerce")
@@ -848,6 +857,11 @@ async def main():
         logger.info(f"[OPTIMIZE] symbol={symbol} strategy={strategy_key} iters={args.opt_iters} seed={args.opt_seed}")
 
         if args.opt_engine == "optuna":
+            max_dd_limit = args.opt_max_dd_percent
+            if max_dd_limit is None and hasattr(config, "risk"):
+                max_dd_limit = getattr(config.risk, "max_drawdown_limit", None)
+            if max_dd_limit is not None:
+                logger.info(f"[OPTIMIZE] Restricción: max_drawdown_percent <= {max_dd_limit}")
             results = optuna_search(
                 symbol=symbol,
                 strategy_key=strategy_key,
@@ -857,6 +871,7 @@ async def main():
                 initial_capital=float(config.backtesting.initial_capital),
                 commission_percent=float(config.backtesting.commission),
                 top_n=int(args.opt_top),
+                max_drawdown_percent_limit=float(max_dd_limit) if max_dd_limit is not None else None,
             )
         else:
             results = random_search(
