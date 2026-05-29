@@ -16,6 +16,11 @@ try:
 except ImportError:  # pragma: no cover
     requests = None
 
+try:
+    import optuna  # type: ignore
+except ImportError:  # pragma: no cover
+    optuna = None
+
 from backtesting.backtester import AdvancedBacktester
 from strategies.ut_bot_psar import UTBotPSARStrategy
 from strategies.ut_bot_psar_conservative import UTBotPSARConservativeStrategy
@@ -146,18 +151,31 @@ def evaluate_candidate(
     total_trades = float(result.get("total_trades", 0) or 0)
     win_rate = float(result.get("win_rate", 0) or 0) * 100.0
     total_pnl = float(result.get("total_pnl", 0) or 0)
-    max_dd_raw = float(result.get("max_drawdown", 0) or 0)
+    total_pnl_percent = float(result.get("total_pnl_percent", 0) or 0)
+    max_dd = float(result.get("max_drawdown", 0) or 0)
+    max_dd_percent = float(result.get("max_drawdown_percent", 0) or 0)
+    sharpe_ratio = float(result.get("sharpe_ratio", 0) or 0)
+    sortino_ratio = float(result.get("sortino_ratio", 0) or 0)
+    calmar_ratio = float(result.get("calmar_ratio", 0) or 0)
+
+    # Profit factor: si no viene, lo calculamos desde trades.
     trades = result.get("trades", []) or []
-    profit_factor = _profit_factor_from_trades(trades)
+    profit_factor = float(result.get("profit_factor", 0) or 0)
+    if profit_factor == 0 and trades:
+        profit_factor = float(_profit_factor_from_trades(trades))
 
     metrics = {
         "total_trades": total_trades,
         "win_rate_percent": win_rate,
         "total_pnl": total_pnl,
-        "total_pnl_percent": (total_pnl / initial_capital) * 100.0 if initial_capital else 0.0,
-        "max_drawdown_raw": max_dd_raw,
-        "max_drawdown_abs": abs(max_dd_raw),
-        "max_drawdown_percent_abs": (abs(max_dd_raw) / initial_capital) * 100.0 if initial_capital else 0.0,
+        "total_pnl_percent": total_pnl_percent if total_pnl_percent else ((total_pnl / initial_capital) * 100.0 if initial_capital else 0.0),
+        "max_drawdown": max_dd,
+        "max_drawdown_abs": abs(max_dd),
+        "max_drawdown_percent": max_dd_percent,
+        "max_drawdown_percent_abs": abs(max_dd_percent),
+        "sharpe_ratio": sharpe_ratio,
+        "sortino_ratio": sortino_ratio,
+        "calmar_ratio": calmar_ratio,
         "profit_factor": float(profit_factor),
     }
     metrics["score"] = _score(metrics)
@@ -201,6 +219,62 @@ def random_search(
         best = best[: max(1, top_n)]
 
     return best
+
+
+def optuna_search(
+    *,
+    symbol: str,
+    strategy_key: str,
+    df_ohlcv: pd.DataFrame,
+    n_trials: int,
+    seed: int,
+    initial_capital: float,
+    commission_percent: float,
+    top_n: int,
+) -> List[CandidateResult]:
+    """
+    Optimización con Optuna (TPE) maximizando `score`.
+    Guarda métricas completas del backtest en `trial.user_attrs["metrics"]`.
+    """
+    if optuna is None:
+        raise RuntimeError("Optuna no está instalado. Instala `optuna` para usar optuna_search.")
+
+    space = _param_space(strategy_key)
+
+    def objective(trial) -> float:  # type: ignore[no-untyped-def]
+        params: Dict[str, Any] = {}
+        for key, values in space.items():
+            params[key] = trial.suggest_categorical(key, values)
+
+        cand = evaluate_candidate(
+            symbol=symbol,
+            data=df_ohlcv,
+            strategy_key=strategy_key,
+            params=params,
+            initial_capital=initial_capital,
+            commission_percent=commission_percent,
+        )
+        trial.set_user_attr("metrics", cand.metrics)
+        return float(cand.metrics.get("score", 0.0))
+
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+    study.optimize(objective, n_trials=max(1, int(n_trials)))
+
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    completed.sort(key=lambda t: float(t.value or 0.0), reverse=True)
+
+    results: List[CandidateResult] = []
+    for t in completed[: max(1, int(top_n))]:
+        metrics = t.user_attrs.get("metrics") or {}
+        # Normalizar a float para JSON/sorting consistente
+        metrics_float: Dict[str, float] = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
+        # Asegurar score
+        if "score" not in metrics_float:
+            metrics_float["score"] = float(t.value or 0.0)
+        results.append(CandidateResult(params=dict(t.params), metrics=metrics_float))
+
+    return results
 
 
 def save_optimization_results(

@@ -106,9 +106,10 @@ python main.py --mode paper
 # Ejemplo: un solo símbolo en Bybit/Binance
 python main.py --mode live --symbol BTC/USDT --timeframe 1h --live-poll-seconds 30
 
-# 5d. Optimizar parámetros (random search) sobre un CSV OHLCV
-# Guarda el top-N en `data/optimization_results/<symbol>_<strategy>.json`
-python main.py --mode optimize --strategy optimizada --opt-iters 200 --opt-top 10
+# 5d. Optimizar parámetros sobre un CSV OHLCV (random u Optuna)
+# Guarda el top-N en `data/optimization_results/<symbol>_<strategy>_<engine>.json`
+python main.py --mode optimize --strategy optimizada --opt-engine random --opt-iters 200 --opt-top 10
+python main.py --mode optimize --strategy optimizada --opt-engine optuna --opt-iters 200 --opt-top 10
 
 # 6. Ver dashboard
 cd ..

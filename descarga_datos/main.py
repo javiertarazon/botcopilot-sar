@@ -76,6 +76,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--paper-allow-short", action="store_true", help="Permite short en paper trading")
     parser.add_argument("--live-poll-seconds", type=int, default=30, help="Polling en live (segundos)")
     parser.add_argument("--strategy", choices=["basica", "conservadora", "optimizada"], help="Estrategia para optimize/live")
+    parser.add_argument("--opt-engine", choices=["random", "optuna"], default="random", help="Motor de optimización (default: random)")
     parser.add_argument("--opt-iters", type=int, default=200, help="Iteraciones de optimización (random search)")
     parser.add_argument("--opt-seed", type=int, default=42, help="Seed para optimización")
     parser.add_argument("--opt-data-url", help="URL CSV OHLCV (default: SOLUSDT_1h dataset)")
@@ -817,6 +818,7 @@ async def main():
         from optimization.parameter_search import (
             DEFAULT_SOL_1H_CSV_URL,
             load_ohlcv_dataframe_from_csv_url,
+            optuna_search,
             random_search,
             save_optimization_results,
         )
@@ -845,19 +847,31 @@ async def main():
         logger.info(f"[OPTIMIZE] Filas: {len(df)}")
         logger.info(f"[OPTIMIZE] symbol={symbol} strategy={strategy_key} iters={args.opt_iters} seed={args.opt_seed}")
 
-        results = random_search(
-            symbol=symbol,
-            strategy_key=strategy_key,
-            df_ohlcv=df,
-            iters=int(args.opt_iters),
-            seed=int(args.opt_seed),
-            initial_capital=float(config.backtesting.initial_capital),
-            commission_percent=float(config.backtesting.commission),
-            top_n=int(args.opt_top),
-        )
+        if args.opt_engine == "optuna":
+            results = optuna_search(
+                symbol=symbol,
+                strategy_key=strategy_key,
+                df_ohlcv=df,
+                n_trials=int(args.opt_iters),
+                seed=int(args.opt_seed),
+                initial_capital=float(config.backtesting.initial_capital),
+                commission_percent=float(config.backtesting.commission),
+                top_n=int(args.opt_top),
+            )
+        else:
+            results = random_search(
+                symbol=symbol,
+                strategy_key=strategy_key,
+                df_ohlcv=df,
+                iters=int(args.opt_iters),
+                seed=int(args.opt_seed),
+                initial_capital=float(config.backtesting.initial_capital),
+                commission_percent=float(config.backtesting.commission),
+                top_n=int(args.opt_top),
+            )
 
         safe_symbol = symbol.replace("/", "_").replace(":", "_")
-        out_path = Path(config.storage.path) / "optimization_results" / f"{safe_symbol}_{strategy_key}.json"
+        out_path = Path(config.storage.path) / "optimization_results" / f"{safe_symbol}_{strategy_key}_{args.opt_engine}.json"
 
         save_optimization_results(
             out_path=out_path,
@@ -865,6 +879,7 @@ async def main():
             strategy_key=strategy_key,
             results=results,
             meta={
+                "engine": args.opt_engine,
                 "url": url,
                 "iters": int(args.opt_iters),
                 "seed": int(args.opt_seed),
