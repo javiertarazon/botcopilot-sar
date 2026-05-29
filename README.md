@@ -125,6 +125,15 @@ Parámetros útiles:
 
 ---
 
+## ☁️ Codespaces (persistente)
+
+Este repo incluye `.devcontainer/` para que puedas abrirlo en GitHub Codespaces y tener un entorno reproducible.
+
+- El entorno se instala en una venv dentro del workspace: `.venv/` (se mantiene al detener/iniciar el Codespace).
+- Para evitar fallos de dependencias específicas de Windows (p. ej. `MetaTrader5`) se usa `requirements-codespace.txt`.
+
+---
+
 ## 📊 Dashboard Profesional
 
 ### 🏆 Características del Dashboard
